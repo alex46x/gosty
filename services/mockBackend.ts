@@ -50,60 +50,71 @@ export const login = async (username: string, password: string): Promise<AuthRes
 
 // --- SEARCH SERVICES ---
 
+// Helper to normalize _id to id
+const normalize = (data: any): any => {
+    if (Array.isArray(data)) {
+        return data.map(item => normalize(item));
+    }
+    if (data && typeof data === 'object' && data._id) {
+        return { ...data, id: data._id, _id: undefined }; // Map _id to id
+    }
+    return data;
+};
+
+// --- SEARCH SERVICES ---
+
 export const searchUsers = async (query: string, requesterId: string): Promise<SearchResult[]> => {
     if (!query || query.trim().length < 3) return [];
-    return fetchAPI(`/users/search/${query}`);
+    return normalize(await fetchAPI(`/users/search/${query}`));
 };
 
 // --- PUBLIC PROFILE SERVICES ---
 
 export const getUserPublicProfile = async (targetUsername: string): Promise<UserProfile> => {
-    return fetchAPI(`/users/${targetUsername}`);
+    return normalize(await fetchAPI(`/users/${targetUsername}`));
 };
 
 export const getUserPublicPosts = async (targetUsername: string, viewerId?: string): Promise<Post[]> => {
-    return fetchAPI(`/posts?username=${targetUsername}`);
+    return normalize(await fetchAPI(`/posts?username=${targetUsername}`));
 };
 
 // --- SELF PROFILE SERVICES ---
 
 export const getUserProfile = async (userId: string): Promise<UserProfile> => {
-    return fetchAPI(`/users/id/${userId}`);
+    return normalize(await fetchAPI(`/users/id/${userId}`));
 };
 
 export const getUserPosts = async (userId: string): Promise<Post[]> => {
-    return fetchAPI('/posts/mine'); // filtered by auth token in backend
+    return normalize(await fetchAPI('/posts/mine')); 
 };
 
 // --- POSTING SERVICES ---
 
 export const getFeed = async (currentUserId?: string): Promise<Post[]> => {
-    return fetchAPI('/posts');
+    return normalize(await fetchAPI('/posts'));
 };
 
 export const getPostsByHashtag = async (hashtag: string, currentUserId?: string): Promise<Post[]> => {
     const tag = hashtag.replace('#', '');
-    return fetchAPI(`/posts?hashtag=${tag}`);
+    return normalize(await fetchAPI(`/posts?hashtag=${tag}`));
 };
 
 export const getSinglePost = async (postId: string, currentUserId?: string): Promise<Post> => {
-    // I missed GET /api/posts/:id in postRoutes.js!
-    // I'll add it in next turn.
-    return fetchAPI(`/posts/${postId}`); 
+    return normalize(await fetchAPI(`/posts/${postId}`)); 
 };
 
 export const createPost = async (content: string, authorId: string, toxicityScore: number, isAnonymous: boolean = true): Promise<Post> => {
-    return fetchAPI('/posts', {
+    return normalize(await fetchAPI('/posts', {
         method: 'POST',
         body: JSON.stringify({ content, toxicityScore, isAnonymous })
-    });
+    }));
 };
 
 export const editPost = async (postId: string, userId: string, newContent: string): Promise<Post> => {
-    return fetchAPI(`/posts/${postId}`, {
+    return normalize(await fetchAPI(`/posts/${postId}`, {
         method: 'PUT',
         body: JSON.stringify({ content: newContent })
-    });
+    }));
 };
 
 export const deletePost = async (postId: string, userId: string): Promise<void> => {
@@ -113,10 +124,10 @@ export const deletePost = async (postId: string, userId: string): Promise<void> 
 };
 
 export const sharePostToProfile = async (originalPostId: string, content: string, authorId: string): Promise<Post> => {
-    return fetchAPI(`/posts/share/${originalPostId}`, {
+    return normalize(await fetchAPI(`/posts/share/${originalPostId}`, {
         method: 'POST',
         body: JSON.stringify({ content })
-    });
+    }));
 };
 
 // --- INTERACTION SERVICES ---
@@ -128,21 +139,21 @@ export const toggleLikePost = async (postId: string, userId: string): Promise<{ 
 };
 
 export const addComment = async (postId: string, content: string, authorId: string, parentId?: string): Promise<Comment> => {
-    return fetchAPI(`/posts/comment/${postId}`, {
+    return normalize(await fetchAPI(`/posts/comment/${postId}`, {
         method: 'POST',
         body: JSON.stringify({ content, parentId })
-    });
+    }));
 };
 
 export const getComments = async (postId: string): Promise<Comment[]> => {
-    return fetchAPI(`/posts/comment/${postId}`); // or /api/comments?postId=... depending on route
+    return normalize(await fetchAPI(`/posts/comment/${postId}`)); 
 };
 
 export const updateComment = async (commentId: string, newContent: string): Promise<Comment> => {
-    return fetchAPI(`/comments/${commentId}`, {
+    return normalize(await fetchAPI(`/comments/${commentId}`, {
         method: 'PUT',
         body: JSON.stringify({ content: newContent })
-    });
+    }));
 };
 
 // --- NOTIFICATION UTILS ---

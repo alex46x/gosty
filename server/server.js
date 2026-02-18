@@ -39,7 +39,7 @@ app.get('/', (req, res) => {
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ message: 'Server Error', error: err.message });
+  res.status(500).json({ message: `Global Server Error: ${err.message}`, error: err.message });
 });
 
 const PORT = process.env.PORT || 5000;

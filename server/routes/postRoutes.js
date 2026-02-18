@@ -7,6 +7,13 @@ import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
+// Helper to extract hashtags and mentions
+const extractTags = (content) => {
+    const hashtags = (content.match(/#[a-zA-Z0-9_]+/g) || []).map(tag => tag.toLowerCase());
+    const mentions = (content.match(/@[a-zA-Z0-9_]+/g) || []).map(mention => mention.substring(1)); // Remove @
+    return { hashtags, mentions };
+};
+
 // Helper to filter privacy (hide author if anonymous)
 const privacyFilter = (post, viewerId) => {
     const isMine = viewerId && post.authorId.toString() === viewerId.toString();
@@ -27,7 +34,8 @@ const privacyFilter = (post, viewerId) => {
 // @access  Protected
 router.post('/', protect, async (req, res) => {
     try {
-        const { content, toxicityScore, isAnonymous, hashtags, mentions } = req.body;
+        const { content, toxicityScore, isAnonymous } = req.body;
+        const { hashtags, mentions } = extractTags(content);
 
         const newPost = await Post.create({
             content,
@@ -162,11 +170,15 @@ router.put('/like/:id', protect, async (req, res) => {
         const post = await Post.findById(req.params.id);
         if (!post) return res.status(404).json({ message: 'Post not found' });
 
-        const isLiked = post.likedBy.some(id => id.toString() === req.user._id.toString());
+        if (!Array.isArray(post.likedBy)) {
+            post.likedBy = [];
+        }
+
+        const isLiked = post.likedBy.some(id => id && id.toString() === req.user._id.toString());
 
         if (isLiked) {
-            post.likedBy = post.likedBy.filter(id => id.toString() !== req.user._id.toString());
-            post.likes--;
+            post.likedBy = post.likedBy.filter(id => id && id.toString() !== req.user._id.toString());
+            post.likes = Math.max(0, post.likes - 1); // Prevent negative likes
         } else {
             post.likedBy.push(req.user._id);
             post.likes++;
@@ -185,8 +197,8 @@ router.put('/like/:id', protect, async (req, res) => {
         await post.save();
         res.json({ likes: post.likes, hasLiked: !isLiked });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server Error' });
+        console.error('Like Route Error:', error);
+        res.status(500).json({ message: `Like Error: ${error.message}` });
     }
 });
 
@@ -222,8 +234,8 @@ router.post('/comment/:id', protect, async (req, res) => {
 
         res.json(comment);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server Error' });
+        console.error('Comment Route Error:', error);
+        res.status(500).json({ message: `Comment Error: ${error.message}` });
     }
 });
 
@@ -252,7 +264,8 @@ router.put('/:id', protect, async (req, res) => {
             return res.status(401).json({ message: 'Not authorized' });
         }
 
-        const { content, hashtags, mentions } = req.body;
+        const { content } = req.body;
+        const { hashtags, mentions } = extractTags(content || post.content);
         
         post.content = content || post.content;
         post.hashtags = hashtags || post.hashtags;
@@ -300,6 +313,7 @@ router.post('/share/:id', protect, async (req, res) => {
         if (originalPost.isAnonymous) return res.status(400).json({ message: 'Cannot share anonymous posts' });
 
         const { content } = req.body;
+        const { hashtags, mentions } = extractTags(content || "");
 
         const newPost = await Post.create({
             content: content || "",
@@ -307,6 +321,8 @@ router.post('/share/:id', protect, async (req, res) => {
             authorUsername: req.user.username,
             isAnonymous: false,
             sharedPostId: originalPost._id,
+            hashtags,
+            mentions,
             likes: 0,
             commentCount: 0
         });

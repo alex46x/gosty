@@ -296,7 +296,12 @@ export const PostCard: React.FC<PostCardProps> = ({
   };
 
   const handleLike = async () => {
-    if (isLiking || !user) return;
+    if (!user) {
+        alert("You must be logged in to react.");
+        return;
+    }
+    if (isLiking) return;
+
     setIsLiking(true);
     
     // Optimistic Update
@@ -311,11 +316,12 @@ export const PostCard: React.FC<PostCardProps> = ({
       // Sync with server result
       setLikes(result.likes);
       setHasLiked(result.hasLiked);
-    } catch (err) {
+    } catch (err: any) {
       // Revert on error
       setLikes(previousLikes);
       setHasLiked(previousHasLiked);
       console.error("Like failed", err);
+      alert(`Like failed: ${err.message || "Unknown error"}`);
     } finally {
       setIsLiking(false);
     }
@@ -340,7 +346,11 @@ export const PostCard: React.FC<PostCardProps> = ({
 
   const handleSubmitComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newComment.trim() || !user) return;
+    if (!user) {
+        alert("You must be logged in to comment.");
+        return;
+    }
+    if (!newComment.trim()) return;
 
     setSubmittingComment(true);
     try {
@@ -349,8 +359,9 @@ export const PostCard: React.FC<PostCardProps> = ({
       setCommentCount(prev => prev + 1);
       setNewComment('');
       setReplyingTo(null);
-    } catch (err) {
-      console.error("Failed to post comment");
+    } catch (err: any) {
+      console.error("Failed to post comment", err);
+      alert(`Comment failed: ${err.message || "Unknown error"}`);
     } finally {
       setSubmittingComment(false);
     }

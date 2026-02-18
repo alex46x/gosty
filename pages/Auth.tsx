@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Lock, User, ArrowRight, AlertTriangle, Info, Shield } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { login, register } from '../services/mockBackend';
-import { generateKeyPair, savePrivateKey } from '../services/cryptoService';
+import { generateKeyPair, savePrivateKey, checkCryptoSupport } from '../services/cryptoService';
 import { Button, Input, Alert } from '../components/UI';
 import { ViewState } from '../types';
 
@@ -18,6 +18,11 @@ export const Auth: React.FC<AuthProps> = ({ view, onChangeView }) => {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isSecureContext, setIsSecureContext] = useState(true);
+
+  useEffect(() => {
+    setIsSecureContext(checkCryptoSupport());
+  }, []);
 
   const isLogin = view === ViewState.LOGIN;
 
@@ -89,6 +94,15 @@ export const Auth: React.FC<AuthProps> = ({ view, onChangeView }) => {
           </div>
 
           {error && <div className="mb-6"><Alert>{error}</Alert></div>}
+
+          {!isSecureContext && (
+            <div className="mb-6">
+              <Alert variant="warning">
+                INSECURE MODE ACTIVE: End-to-End Encryption is simulated. 
+                Your messages are NOT secure. This mode is for testing only.
+              </Alert>
+            </div>
+          )}
 
           {!isLogin && (
              <div className="mb-6 space-y-2">

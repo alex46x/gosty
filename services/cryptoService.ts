@@ -30,9 +30,26 @@ const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
   return bytes.buffer;
 };
 
+// --- SUPPORT CHECK ---
+
+export const checkCryptoSupport = (): boolean => {
+  if (!window.crypto || !window.crypto.subtle) {
+    return false;
+  }
+  return true;
+};
+
 // --- KEY GENERATION ---
 
 export const generateKeyPair = async (): Promise<{ publicKey: string; privateKey: CryptoKey }> => {
+  if (!checkCryptoSupport()) {
+    console.warn("Using INSECURE dummy keys for testing");
+    return {
+      publicKey: "INSECURE_PUB_" + Math.random().toString(36).substring(7),
+      privateKey: { type: "private", extractable: true, algorithm: { name: "INSECURE" }, usages: ["decrypt"] } as unknown as CryptoKey
+    };
+  }
+
   const keyPair = await window.crypto.subtle.generateKey(
     {
       name: "RSA-OAEP",
@@ -82,6 +99,17 @@ export const encryptMessage = async (
   receiverPublicKeyPem: string, 
   senderPublicKeyPem: string
 ): Promise<EncryptedPayload> => {
+  // Check for insecure context OR insecure keys
+  if (!checkCryptoSupport() || receiverPublicKeyPem.startsWith("INSECURE_") || senderPublicKeyPem.startsWith("INSECURE_")) {
+    // Mock Encryption: Just Base64 encode
+    return {
+      encryptedContent: "[[INSECURE::" + window.btoa(text) + "]]",
+      iv: "INSECURE_IV",
+      encryptedKeyForReceiver: "INSECURE_KEY",
+      encryptedKeyForSender: "INSECURE_KEY"
+    };
+  }
+
   const textEncoder = new TextEncoder();
   const encodedText = textEncoder.encode(text);
 
@@ -135,6 +163,20 @@ export const decryptMessage = async (
   encryptedKeyB64: string,
   privateKey: CryptoKey
 ): Promise<string> => {
+  // Check for mock encryption marker
+  if (encryptedContentB64.startsWith("[[INSECURE::")) {
+      const b64 = encryptedContentB64.replace("[[INSECURE::", "").replace("]]", "");
+      try {
+          return window.atob(b64);
+      } catch (e) {
+          return "[[INVALID MOCK ENCRYPTION]]";
+      }
+  }
+
+  if (!checkCryptoSupport()) {
+    return "[[DECRYPTION FAILED: INSECURE CONTEXT]]";
+  }
+
   try {
     // 1. Decrypt the AES Session Key using RSA Private Key
     const encryptedKeyBuffer = base64ToArrayBuffer(encryptedKeyB64);
@@ -177,6 +219,11 @@ export const decryptMessage = async (
 // For this MVP, we use LocalStorage.
 
 export const savePrivateKey = async (username: string, key: CryptoKey) => {
+  if (!checkCryptoSupport() || (key as any).algorithm?.name === "INSECURE") {
+     localStorage.setItem(`ghost_priv_${username}`, "INSECURE_PRIV_KEY");
+     return;
+  }
+
   const exported = await window.crypto.subtle.exportKey("pkcs8", key);
   const b64 = arrayBufferToBase64(exported);
   localStorage.setItem(`ghost_priv_${username}`, b64);
@@ -185,6 +232,10 @@ export const savePrivateKey = async (username: string, key: CryptoKey) => {
 export const loadPrivateKey = async (username: string): Promise<CryptoKey | null> => {
   const b64 = localStorage.getItem(`ghost_priv_${username}`);
   if (!b64) return null;
+
+  if (b64 === "INSECURE_PRIV_KEY") {
+     return { type: "private", extractable: true, algorithm: { name: "INSECURE" }, usages: ["decrypt"] } as unknown as CryptoKey;
+  }
 
   try {
     const binary = base64ToArrayBuffer(b64);
