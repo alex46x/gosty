@@ -1,4 +1,5 @@
 import express from 'express';
+import jwt from 'jsonwebtoken'; // Added for manual token decoding
 import Post from '../models/Post.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
@@ -79,6 +80,19 @@ router.get('/', async (req, res) => {
          const { username, hashtag } = req.query;
          let query = {};
          
+         // Optional: Identify Viewer for privacy filtering and "hasLiked" status
+         let viewerId = null;
+         if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+             try {
+                 const token = req.headers.authorization.split(' ')[1];
+                 const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                 viewerId = decoded.id;
+             } catch (e) {
+                 // Invalid token, treat as anonymous/guest
+                 console.warn("Feed access with invalid token");
+             }
+         }
+         
          if (username) {
              const user = await User.findOne({ username: username });
              if (user) {
@@ -89,29 +103,14 @@ router.get('/', async (req, res) => {
              }
          } else if (hashtag) {
              query.hashtags = hashtag.toLowerCase();
-             query.isAnonymous = false; // Usually hashtags are public? Or maybe both? 
-             // Requirement says: "filter(p => !p.isAnonymous && p.hashtags...)" in mockBackend
+             query.isAnonymous = false; 
          }
 
-         // If we are getting the main feed (no filters), we typically only show public posts + maybe anonymous ones?
-         // MockBackend logic: 
-         // getFeed: returns all posts (privacy filtered)
-         // getPostsByHashtag: returns !isAnonymous
-         // getUserPublicPosts: returns !isAnonymous
-         
          const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
 
-        const safePosts = posts.map(p => {
-             const isAnon = p.isAnonymous;
-             // We don't have the viewer ID here easily without auth middleware on public route.
-             // But for public feed data, redaction is key.
-             return {
-                 ...p.toObject(),
-                 authorId: isAnon ? undefined : p.authorId,
-                 authorUsername: isAnon ? undefined : p.authorUsername,
-                 likedBy: undefined
-                 // isMine will be false default, frontend can check against its own known ID if needed or we fix later
-             };
+         const safePosts = posts.map(p => {
+             // Use the shared privacyFilter if possible, or replicate logic
+             return privacyFilter(p, viewerId);
          });
          
          res.json(safePosts);
@@ -129,15 +128,18 @@ router.get('/:id', async (req, res) => {
         const post = await Post.findById(req.params.id);
         if (!post) return res.status(404).json({ message: 'Post not found' });
         
-        const isAnon = post.isAnonymous;
-        const safePost = {
-            ...post.toObject(),
-            authorId: isAnon ? undefined : post.authorId,
-            authorUsername: isAnon ? undefined : post.authorUsername,
-            likedBy: undefined
-        };
-        
-        res.json(safePost);
+        let viewerId = null;
+        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+            try {
+                const token = req.headers.authorization.split(' ')[1];
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                viewerId = decoded.id;
+            } catch (e) {
+                // Ignore invalid token
+            }
+        }
+
+        res.json(privacyFilter(post, viewerId));
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Server Error' });
