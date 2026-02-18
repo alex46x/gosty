@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { User, Activity, Calendar, FileText, Hash, AlertCircle } from 'lucide-react';
-import { getUserProfile, getUserPosts } from '../services/mockBackend';
+// import { getUserProfile, getUserPosts } from '../services/mockBackend';
+
 import { Post, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { PostCard } from '../components/PostCard';
 import { Button } from '../components/UI';
+import { getUserPosts, getUserProfile } from '@/services/mockBackend';
 
 interface ProfileProps {
   onHashtagClick?: (tag: string) => void;
@@ -26,12 +28,12 @@ export const Profile: React.FC<ProfileProps> = ({ onHashtagClick }) => {
       try {
         // In a real app, we wouldn't need to pass the ID if the token is valid,
         // but for this mock we pass the ID which should match the JWT owner.
-        const [profileData, postsData] = await Promise.all([
-          getUserProfile(user.id),
-          getUserPosts(user.id)
+        const [profileData] = await Promise.all([
+          getUserProfile(user.id)
+          // getUserPosts(user.id)
         ]);
         setProfile(profileData);
-        setPosts(postsData);
+        // setPosts(postsData);
       } catch (err: any) {
         console.error("Profile load error:", err);
         setError(err.message || "Failed to load profile data.");
