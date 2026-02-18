@@ -1,0 +1,5 @@
+{
+  "name": "GhostProtocol",
+  "description": "A privacy-first, anonymous social media platform. Features zero-knowledge identity, encrypted sessions, and AI-powered content moderation.",
+  "requestFramePermissions": []
+}
