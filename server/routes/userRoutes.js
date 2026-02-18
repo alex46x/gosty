@@ -70,7 +70,21 @@ router.get('/search/:query', protect, async (req, res) => {
 // @access  Protected
 router.get('/id/:id', protect, async (req, res) => {
     try {
+        // Safety Check 1: Validate ID format
+        if (!req.params.id || req.params.id === 'undefined' || req.params.id === 'null') {
+             // If ID is malformed but we have a logged in user, maybe they want their own profile?
+             // But strictly for this route structure, we should just return 400.
+             return res.status(400).json({ message: 'Invalid User ID provided' });
+        }
+        
+        // Check for valid ObjectId (approximate check)
+        if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+            return res.status(400).json({ message: 'Invalid User ID format' });
+        }
+
         const user = await User.findById(req.params.id).select('-password');
+        
+        // Safety Check 2: Handle Null User
         if (!user) return res.status(404).json({ message: 'User not found' });
 
         const postCount = await Post.countDocuments({ authorId: user._id });
@@ -81,8 +95,14 @@ router.get('/id/:id', protect, async (req, res) => {
             postCount
         });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server Error' });
+        console.error('User ID Route Error:', error);
+        
+        // Safety Check 3: Handle Mongoose CastError explicitly
+        if (error.name === 'CastError') {
+             return res.status(400).json({ message: 'Invalid User ID format' });
+        }
+        
+        res.status(500).json({ message: `User Error: ${error.message}` });
     }
 });
 

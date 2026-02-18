@@ -25,7 +25,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const storedUser = localStorage.getItem('ghost_user');
       
       if (storedToken && storedUser) {
-        const parsedUser = JSON.parse(storedUser);
+        let parsedUser = JSON.parse(storedUser);
+        
+        // Fix: Ensure 'id' exists (map from '_id' if needed)
+        if (!parsedUser.id && parsedUser._id) {
+            parsedUser = { ...parsedUser, id: parsedUser._id };
+            localStorage.setItem('ghost_user', JSON.stringify(parsedUser)); // Update storage
+        }
+
         setToken(storedToken);
         setUser(parsedUser);
 
@@ -42,13 +49,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const loginUser = async (data: AuthResponse) => {
-    setUser(data.user);
+    // Fix: Ensure 'id' exists
+    const safeUser = { ...data.user };
+    if (!safeUser.id && (safeUser as any)._id) {
+        safeUser.id = (safeUser as any)._id;
+    }
+
+    setUser(safeUser);
     setToken(data.token);
     localStorage.setItem('ghost_token', data.token);
-    localStorage.setItem('ghost_user', JSON.stringify(data.user));
+    localStorage.setItem('ghost_user', JSON.stringify(safeUser));
 
     // Try load key on login
-    const key = await loadPrivateKey(data.user.username);
+    const key = await loadPrivateKey(safeUser.username);
     setPrivateKey(key);
   };
 

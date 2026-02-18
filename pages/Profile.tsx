@@ -32,8 +32,9 @@ export const Profile: React.FC<ProfileProps> = ({ onHashtagClick }) => {
         ]);
         setProfile(profileData);
         setPosts(postsData);
-      } catch (err) {
-        setError("Unable to decrypt profile data.");
+      } catch (err: any) {
+        console.error("Profile load error:", err);
+        setError(err.message || "Failed to load profile data.");
       } finally {
         setLoading(false);
       }
