@@ -2,11 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Lock, Send, User, MessageSquare, AlertTriangle, ChevronRight, Hash, ShieldCheck, ExternalLink, ArrowLeft, Repeat } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { getConversations, getMessages, sendMessage, getUserPublicKey, markMessagesRead, getSinglePost } from '../services/mockBackend';
+import { useSocket } from '../context/SocketContext';
+import { getConversations, getMessages, sendMessage, getUserPublicKey, markMessagesRead, getSinglePost, translateText } from '../services/mockBackend';
 import { encryptMessage, decryptMessage } from '../services/cryptoService';
 import { Message, DecryptedMessage, ConversationSummary, Post } from '../types';
 import { Button } from '../components/UI';
 import { PostCard } from '../components/PostCard';
+import { Globe } from 'lucide-react';
 
 interface MessagesProps {
   initialChatUsername?: string;
@@ -15,14 +17,45 @@ interface MessagesProps {
 
 export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewProfile }) => {
   const { user, privateKey } = useAuth();
+  const { socket } = useSocket();
   
   // UI State
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeChat, setActiveChat] = useState<ConversationSummary | null>(null);
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   
-  // Shared Post Data Cache (to prevent refetching same post multiple times)
+  // Shared Post Data Cache
   const [sharedPostsCache, setSharedPostsCache] = useState<Record<string, Post>>({});
+
+  // Translation State
+  const [translatedMessages, setTranslatedMessages] = useState<Record<string, string>>({});
+  const [translatingIds, setTranslatingIds] = useState<Set<string>>(new Set());
+
+  const handleTranslateMessage = async (msgId: string, content: string) => {
+    if (translatedMessages[msgId]) {
+        // Toggle off
+        setTranslatedMessages(prev => {
+            const next = { ...prev };
+            delete next[msgId];
+            return next;
+        });
+        return;
+    }
+
+    setTranslatingIds(prev => new Set(prev).add(msgId));
+    try {
+        const result = await translateText(content);
+        setTranslatedMessages(prev => ({ ...prev, [msgId]: result.translatedText }));
+    } catch (e) {
+        alert('Translation failed');
+    } finally {
+        setTranslatingIds(prev => {
+            const next = new Set(prev);
+            next.delete(msgId);
+            return next;
+        });
+    }
+  };
   
   // Logic State
   const [newMessage, setNewMessage] = useState('');
@@ -32,12 +65,116 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [newChatUsername, setNewChatUsername] = useState('');
   const [showNewChatInput, setShowNewChatInput] = useState(false);
 
+  // Typing indicator
+  const [isOtherTyping, setIsOtherTyping] = useState(false);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Keep a ref to activeChat for use inside socket listeners (avoids stale closure)
+  const activeChatRef = useRef<ConversationSummary | null>(null);
+  activeChatRef.current = activeChat;
 
   // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, sharedPostsCache]); // Re-scroll when posts load
+  }, [messages, sharedPostsCache]);
+
+  // ── Real-Time Socket Listeners ────────────────────────────────────────────
+  useEffect(() => {
+    if (!socket || !user || !privateKey) return;
+
+    // receive_message: decrypt the incoming E2EE message and append it
+    const handleReceiveMessage = async (msg: Message) => {
+      const isMine = msg.senderId === user.id;
+      const encryptedKey = isMine ? msg.encryptedKeyForSender : msg.encryptedKeyForReceiver;
+
+      let content = '[[Decryption Error]]';
+      let sharedPostId: string | undefined;
+
+      try {
+        content = await decryptMessage(msg.encryptedContent, msg.iv, encryptedKey, privateKey);
+        try {
+          const trimmed = content.trim();
+          if (trimmed.startsWith('{') && trimmed.includes('SHARE_POST')) {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.type === 'SHARE_POST' && parsed.postId) {
+              sharedPostId = parsed.postId;
+              content = parsed.comment || '';
+            }
+          }
+        } catch (_) { /* Not JSON */ }
+      } catch (e) {
+        console.error('[Socket] Failed to decrypt incoming message');
+      }
+
+      const decrypted: DecryptedMessage = { ...msg, content, isMine, sharedPostId };
+
+      // Only append if this message belongs to the active conversation
+      const chat = activeChatRef.current;
+      if (chat && (msg.senderId === chat.userId || msg.receiverId === chat.userId)) {
+        setMessages(prev => {
+          // Deduplicate: skip if a message with this id already exists
+          if (prev.some(m => m.id === (msg as any)._id || m.id === msg.id)) return prev;
+          return [...prev, decrypted];
+        });
+      }
+
+      // Move or add sender to top of conversations with updated unread
+      setConversations(prev => {
+        const senderId = msg.senderId;
+        const existing = prev.find(c => c.userId === senderId);
+        if (existing) {
+          const active = activeChatRef.current;
+          return prev.map(c =>
+            c.userId === senderId
+              ? { ...c, unreadCount: active?.userId === senderId ? 0 : c.unreadCount + 1 }
+              : c
+          );
+        }
+        // New conversation — refresh list from server
+        loadConvos();
+        return prev;
+      });
+    };
+
+    // unread_count_update: update badge in sidebar without full refetch
+    const handleUnreadUpdate = ({ fromUserId, unreadCount }: { fromUserId: string; fromUsername: string; unreadCount: number }) => {
+      const activeUserId = activeChatRef.current?.userId;
+      setConversations(prev =>
+        prev.map(c =>
+          c.userId === fromUserId
+            ? { ...c, unreadCount: activeUserId === fromUserId ? 0 : unreadCount }
+            : c
+        )
+      );
+    };
+
+    // typing indicator
+    const handleTyping = ({ senderId }: { senderId: string }) => {
+      if (senderId === activeChatRef.current?.userId) {
+        setIsOtherTyping(true);
+        if (stopTypingTimerRef.current) clearTimeout(stopTypingTimerRef.current);
+        stopTypingTimerRef.current = setTimeout(() => setIsOtherTyping(false), 3000);
+      }
+    };
+
+    const handleStopTyping = ({ senderId }: { senderId: string }) => {
+      if (senderId === activeChatRef.current?.userId) setIsOtherTyping(false);
+    };
+
+    socket.on('receive_message', handleReceiveMessage);
+    socket.on('unread_count_update', handleUnreadUpdate);
+    socket.on('typing', handleTyping);
+    socket.on('stop_typing', handleStopTyping);
+
+    return () => {
+      socket.off('receive_message', handleReceiveMessage);
+      socket.off('unread_count_update', handleUnreadUpdate);
+      socket.off('typing', handleTyping);
+      socket.off('stop_typing', handleStopTyping);
+    };
+  }, [socket, user, privateKey]);
 
   // Load conversations list
   const loadConvos = async () => {
@@ -165,9 +302,15 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     setSending(true);
     setError(null);
 
+    // Stop typing indicator on send
+    if (socket && activeChat) {
+      socket.emit('stop_typing', { recipientId: activeChat.userId });
+    }
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
     try {
       const recipientData = await getUserPublicKey(activeChat.username);
-      if (!user.publicKey) throw new Error("You do not have a public key. Please re-register.");
+      if (!user.publicKey) throw new Error('You do not have a public key. Please re-register.');
 
       const encryptedPayload = await encryptMessage(
         newMessage,
@@ -184,18 +327,40 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         encryptedPayload.encryptedKeyForSender
       );
 
+      // Optimistic UI: show the message immediately on sender's side
       const decryptedMsg: DecryptedMessage = {
         ...msg,
         content: newMessage,
         isMine: true
       };
-      setMessages([...messages, decryptedMsg]);
+      setMessages(prev => {
+        if (prev.some(m => m.id === msg.id)) return prev;
+        return [...prev, decryptedMsg];
+      });
       setNewMessage('');
     } catch (err: any) {
-      setError(err.message || "Failed to send message");
+      setError(err.message || 'Failed to send message');
     } finally {
       setSending(false);
     }
+  };
+
+  // Emit typing events (debounced — one emit per 1.5s while typing)
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewMessage(e.target.value);
+
+    if (!socket || !activeChat) return;
+
+    // Emit typing
+    if (!typingTimeoutRef.current) {
+      socket.emit('typing', { recipientId: activeChat.userId });
+    }
+    // Reset debounce
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      socket.emit('stop_typing', { recipientId: activeChat.userId });
+      typingTimeoutRef.current = null;
+    }, 1500);
   };
 
   const startNewChat = async () => {
@@ -227,7 +392,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 h-[calc(100dvh-140px)] min-h-[500px]">
+    <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-3 md:gap-6 h-[calc(100dvh-130px)] md:h-[calc(100dvh-140px)] min-h-[420px]">
       
       {/* Sidebar / Conversation List */}
       <div className={`flex flex-col bg-[#0f0f0f] border border-white/5 rounded-sm h-full ${activeChat ? 'hidden md:flex' : 'flex'}`}>
@@ -312,7 +477,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       </div>
 
       {/* Chat Window */}
-      <div className={`col-span-2 bg-[#0f0f0f] border border-white/5 rounded-sm flex-col relative h-full ${!activeChat ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`md:col-span-1 bg-[#0f0f0f] border border-white/5 rounded-sm flex-col relative h-full ${!activeChat ? 'hidden md:flex' : 'flex'}`}>
         
         <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-5 pointer-events-none"></div>
 
@@ -324,7 +489,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           </div>
         ) : (
           <>
-            {/* Header */}
+            {/* Chat header */}
             <div className="p-3 md:p-4 border-b border-white/5 flex items-center justify-between bg-black/20 z-10 backdrop-blur-sm shrink-0">
               <div className="flex items-center gap-3">
                 <button 
@@ -336,14 +501,25 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                 <div className="min-w-0">
                   <button 
                     onClick={() => onViewProfile(activeChat.username)}
-                    className="block font-mono font-bold text-white tracking-wide hover:text-neon-purple hover:underline underline-offset-4 decoration-neon-purple/50 transition-all text-left truncate max-w-[200px]"
+                    className="block font-mono font-bold text-white tracking-wide hover:text-neon-purple hover:underline underline-offset-4 decoration-neon-purple/50 transition-all text-left truncate max-w-[150px] sm:max-w-[200px]"
                     title="View Public Profile"
                   >
                     @{activeChat.username}
                   </button>
-                  <span className="flex items-center gap-1 text-[10px] text-neon-green font-mono uppercase">
-                    <Lock className="w-3 h-3" /> Encrypted Connection
-                  </span>
+                  {isOtherTyping ? (
+                    <span className="flex items-center gap-1 text-[10px] text-neon-green font-mono animate-pulse">
+                      <span className="inline-flex gap-0.5">
+                        <span className="w-1 h-1 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1 h-1 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1 h-1 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </span>
+                      TRANSMITTING...
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] text-neon-green font-mono uppercase">
+                      <Lock className="w-3 h-3" /> Encrypted Connection
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -366,12 +542,28 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                     animate={{ opacity: 1, y: 0 }}
                     className={`flex flex-col ${msg.isMine ? 'items-end' : 'items-start'}`}
                   >
-                    <div className={`max-w-[85%] md:max-w-[80%] p-3 rounded-sm font-sans text-sm leading-relaxed border ${
+                    <div className={`max-w-[88%] sm:max-w-[80%] p-3 rounded-sm font-sans text-sm leading-relaxed border break-words overflow-wrap-anywhere ${
                       msg.isMine 
                         ? 'bg-neon-purple/10 border-neon-purple/20 text-gray-200' 
                         : 'bg-white/5 border-white/10 text-gray-300'
                     }`}>
-                      {msg.content}
+                      {translatedMessages[msg.id] || msg.content}
+                      
+                      {translatedMessages[msg.id] && (
+                        <div className="text-[9px] text-neon-green mt-1 font-mono flex items-center gap-1 border-t border-white/5 pt-1">
+                             <Globe className="w-3 h-3" /> Translated
+                        </div>
+                      )}
+                      
+                      <div className="flex justify-end mt-1">
+                        <button 
+                            onClick={() => handleTranslateMessage(msg.id, msg.content)}
+                            className="text-[9px] text-gray-500 hover:text-white flex items-center gap-1"
+                        >
+                            <Globe className="w-3 h-3" /> 
+                            {translatingIds.has(msg.id) ? '...' : (translatedMessages[msg.id] ? 'ORIGINAL' : 'TRANSLATE')}
+                        </button>
+                      </div>
                       
                       {/* SHARED POST RENDERER */}
                       {msg.sharedPostId && (
@@ -412,7 +604,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                 className="flex-1 bg-black border border-white/10 p-3 text-sm text-white font-sans focus:border-neon-green outline-none rounded-sm transition-colors"
                 placeholder="Type a secure message..."
                 value={newMessage}
-                onChange={e => setNewMessage(e.target.value)}
+                onChange={handleInputChange}
                 disabled={sending}
               />
               <Button type="submit" isLoading={sending} disabled={!newMessage.trim()} className="!px-4">

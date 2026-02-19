@@ -9,6 +9,9 @@ export interface UserProfile {
   username: string;
   createdAt: string;
   postCount: number;
+  followersCount: number;
+  followingCount: number;
+  isFollowing: boolean;
 }
 
 export interface SearchResult {
@@ -87,7 +90,8 @@ export enum NotificationType {
   COMMENT = 'COMMENT',
   REPLY = 'REPLY',
   MENTION = 'MENTION',
-  SHARE = 'SHARE'
+  SHARE = 'SHARE',
+  FOLLOW = 'FOLLOW'
 }
 
 export interface Notification {

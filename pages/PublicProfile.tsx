@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { User, Activity, Calendar, FileText, Hash, AlertCircle, ArrowLeft, MessageSquare, Lock } from 'lucide-react';
-import { getUserPublicProfile, getUserPublicPosts } from '../services/mockBackend';
+import { User, Activity, Calendar, FileText, Hash, AlertCircle, ArrowLeft, MessageSquare, Lock, Users } from 'lucide-react';
+import { getUserPublicProfile, getUserPublicPosts, followUser, unfollowUser } from '../services/mockBackend';
 import { Post, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { PostCard } from '../components/PostCard';
@@ -20,6 +20,7 @@ export const PublicProfile: React.FC<PublicProfileProps> = ({ targetUsername, on
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [followLoading, setFollowLoading] = useState(false);
 
   const isOwnProfile = user?.username.toLowerCase() === targetUsername.toLowerCase();
 
@@ -45,6 +46,26 @@ export const PublicProfile: React.FC<PublicProfileProps> = ({ targetUsername, on
       fetchData();
     }
   }, [targetUsername, user]);
+
+  const handleFollow = async () => {
+    if (!profile || followLoading) return;
+    setFollowLoading(true);
+    try {
+      const res = profile.isFollowing
+        ? await unfollowUser(targetUsername)
+        : await followUser(targetUsername);
+      // Instant optimistic update from server response
+      setProfile(prev => prev ? {
+        ...prev,
+        isFollowing: res.isFollowing,
+        followersCount: res.followersCount
+      } : prev);
+    } catch (err: any) {
+      setError(err.message || 'Action failed');
+    } finally {
+      setFollowLoading(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -109,19 +130,35 @@ export const PublicProfile: React.FC<PublicProfileProps> = ({ targetUsername, on
               </h1>
             </div>
 
-            {/* Message Action */}
-            {!isOwnProfile && (
-              <Button 
-                onClick={() => onMessage(profile.username)}
-                className="!py-2 !px-4 !text-xs !bg-neon-green/10 !border-neon-green/30 !text-neon-green hover:!bg-neon-green hover:!text-black"
-              >
-                <MessageSquare className="w-4 h-4" />
-                SECURE_CHAT
-              </Button>
-            )}
+            {/* Follow / Message Actions */}
+            <div className="flex flex-row sm:flex-col gap-2 shrink-0 flex-wrap">
+              {!isOwnProfile && (
+                <>
+                  <Button
+                    onClick={handleFollow}
+                    isLoading={followLoading}
+                    className={`!py-2 !px-4 !text-xs ${
+                      profile.isFollowing
+                        ? '!bg-white/10 !border-white/20 !text-gray-300 hover:!bg-neon-red/10 hover:!border-neon-red/30 hover:!text-neon-red'
+                        : '!bg-neon-purple/10 !border-neon-purple/30 !text-neon-purple hover:!bg-neon-purple hover:!text-black'
+                    }`}
+                  >
+                    <Users className="w-4 h-4" />
+                    {profile.isFollowing ? 'UNFOLLOW' : 'FOLLOW'}
+                  </Button>
+                  <Button 
+                    onClick={() => onMessage(profile.username)}
+                    className="!py-2 !px-4 !text-xs !bg-neon-green/10 !border-neon-green/30 !text-neon-green hover:!bg-neon-green hover:!text-black"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    SECURE_CHAT
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 md:gap-6">
             <div className="p-4 bg-white/5 border border-white/5 rounded-sm">
               <div className="flex items-center gap-2 text-xs text-gray-500 mb-1 font-mono uppercase">
                 <Calendar className="w-3 h-3" />
@@ -141,14 +178,24 @@ export const PublicProfile: React.FC<PublicProfileProps> = ({ targetUsername, on
                 {profile.postCount}
               </div>
             </div>
-            
-             <div className="p-4 bg-white/5 border border-white/5 rounded-sm col-span-2 flex items-center gap-4">
-              <div className="p-2 bg-neon-green/10 rounded-full text-neon-green shrink-0">
-                <Lock className="w-5 h-5" />
+
+            <div className="p-4 bg-white/5 border border-white/5 rounded-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-500 mb-1 font-mono uppercase">
+                <Users className="w-3 h-3" />
+                Followers
               </div>
-              <div>
-                 <div className="text-xs text-gray-400 font-mono mb-0.5">E2EE AVAILABLE</div>
-                 <div className="text-[10px] text-gray-600 leading-tight">Messages to this user are end-to-end encrypted. Server cannot read them.</div>
+              <div className="text-xl text-white font-mono font-bold">
+                {profile.followersCount ?? 0}
+              </div>
+            </div>
+
+            <div className="p-4 bg-white/5 border border-white/5 rounded-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-500 mb-1 font-mono uppercase">
+                <Users className="w-3 h-3" />
+                Following
+              </div>
+              <div className="text-xl text-white font-mono font-bold">
+                {profile.followingCount ?? 0}
               </div>
             </div>
           </div>

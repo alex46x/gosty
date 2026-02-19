@@ -9,11 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.4",
-    "react": "^19.2.4",
-    "framer-motion": "^12.34.1",
     "@google/genai": "^1.41.0",
-    "lucide-react": "^0.574.0"
+    "framer-motion": "^12.34.1",
+    "lucide-react": "^0.574.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

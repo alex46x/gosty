@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bell, Heart, MessageCircle, CornerDownRight, Check, AlertCircle, Clock, AtSign } from 'lucide-react';
+import { Bell, Heart, MessageCircle, CornerDownRight, Check, AlertCircle, Clock, AtSign, Users } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { getNotifications, markNotificationsRead } from '../services/mockBackend';
 import { Notification, NotificationType } from '../types';
@@ -49,8 +49,10 @@ export const Notifications: React.FC<NotificationsProps> = ({ onViewPost }) => {
       await markNotificationsRead(user.id, notif.id);
     }
 
-    // 2. Navigate
-    onViewPost(notif.referenceId);
+    // 2. Navigate — FOLLOW notifications reference a username, not a post
+    if (notif.type !== NotificationType.FOLLOW) {
+      onViewPost(notif.referenceId);
+    }
   };
 
   const getIcon = (type: NotificationType) => {
@@ -63,6 +65,8 @@ export const Notifications: React.FC<NotificationsProps> = ({ onViewPost }) => {
         return <CornerDownRight className="w-4 h-4 text-neon-purple" />;
       case NotificationType.MENTION:
         return <AtSign className="w-4 h-4 text-neon-green" />;
+      case NotificationType.FOLLOW:
+        return <Users className="w-4 h-4 text-neon-purple" />;
     }
   };
 
@@ -76,6 +80,8 @@ export const Notifications: React.FC<NotificationsProps> = ({ onViewPost }) => {
         return <span>replied to your signal packet.</span>;
       case NotificationType.MENTION:
         return <span>mentioned you in a broadcast.</span>;
+      case NotificationType.FOLLOW:
+        return <span>started following you.</span>;
     }
   };
 

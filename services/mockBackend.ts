@@ -24,7 +24,22 @@ const fetchAPI = async (endpoint: string, options: RequestInit = {}) => {
         headers: { ...getHeaders(), ...options.headers }
     });
 
-    const data = await res.json();
+    // Read as text first — if the server returned HTML (e.g. a crash page),
+    // res.json() would throw a useless "<!DOCTYPE" error. This gives us a
+    // clean, readable error message instead.
+    const text = await res.text();
+    let data: any;
+    try {
+        data = JSON.parse(text);
+    } catch {
+        // Server returned non-JSON (HTML error page, network issue, etc.)
+        console.error(`[API] Non-JSON response from ${endpoint}:`, text.slice(0, 200));
+        throw new Error(
+            res.ok
+                ? 'Server returned an unexpected response. Please try again.'
+                : `Server error (${res.status}): ${res.statusText}`
+        );
+    }
 
     if (!res.ok) {
         throw new Error(data.message || 'API Error');
@@ -55,8 +70,17 @@ const normalize = (data: any): any => {
     if (Array.isArray(data)) {
         return data.map(item => normalize(item));
     }
-    if (data && typeof data === 'object' && data._id) {
-        return { ...data, id: data._id, _id: undefined }; // Map _id to id
+    if (data && typeof data === 'object') {
+        const normalized = { ...data };
+        if (normalized._id) {
+            normalized.id = normalized._id;
+            delete normalized._id;
+        }
+        // Fix: Map Mongoose 'createdAt' to 'timestamp' if missing
+        if (!normalized.timestamp && normalized.createdAt) {
+            normalized.timestamp = normalized.createdAt;
+        }
+        return normalized;
     }
     return data;
 };
@@ -74,8 +98,23 @@ export const getUserPublicProfile = async (targetUsername: string): Promise<User
     return normalize(await fetchAPI(`/users/${targetUsername}`));
 };
 
+export const translateText = async (text: string, targetLang: string = 'en'): Promise<{ translatedText: string, originalText: string, detectedLang: string }> => {
+    return fetchAPI('/translate', {
+        method: 'POST',
+        body: JSON.stringify({ text, targetLang })
+    });
+};
+
 export const getUserPublicPosts = async (targetUsername: string, viewerId?: string): Promise<Post[]> => {
     return normalize(await fetchAPI(`/posts?username=${targetUsername}`));
+};
+
+export const followUser = async (username: string): Promise<{ followersCount: number; isFollowing: boolean }> => {
+    return fetchAPI(`/users/${username}/follow`, { method: 'POST' });
+};
+
+export const unfollowUser = async (username: string): Promise<{ followersCount: number; isFollowing: boolean }> => {
+    return fetchAPI(`/users/${username}/unfollow`, { method: 'POST' });
 };
 
 // --- SELF PROFILE SERVICES ---
@@ -159,7 +198,7 @@ export const updateComment = async (commentId: string, newContent: string): Prom
 // --- NOTIFICATION UTILS ---
 
 export const getNotifications = async (userId: string): Promise<Notification[]> => {
-    return fetchAPI('/notifications');
+    return normalize(await fetchAPI('/notifications'));
 };
 
 export const markNotificationsRead = async (userId: string, notificationId?: string): Promise<void> => {

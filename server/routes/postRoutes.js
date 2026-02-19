@@ -102,11 +102,15 @@ router.get('/', async (req, res) => {
                  return res.json([]); // User not found
              }
          } else if (hashtag) {
-             query.hashtags = hashtag.toLowerCase();
-             query.isAnonymous = false; 
+             const tag = hashtag.startsWith('#') ? hashtag : `#${hashtag}`;
+             query.hashtags = tag.toLowerCase();
+             // query.isAnonymous = false; // Allow anonymous posts in hashtag feed
+             
+             console.log(`[DEBUG] Searching for hashtag: ${query.hashtags}`);
          }
 
          const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
+         console.log(`[DEBUG] Found ${posts.length} posts for query:`, query);
 
          const safePosts = posts.map(p => {
              // Use the shared privacyFilter if possible, or replicate logic
@@ -114,6 +118,26 @@ router.get('/', async (req, res) => {
          });
          
          res.json(safePosts);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// @desc    Get My Posts
+// @route   GET /api/posts/mine
+// @access  Protected
+// NOTE: This MUST be defined before GET /:id — Express matches top-to-bottom,
+// and /mine would be swallowed by /:id (with id="mine" → CastError) if placed after.
+router.get('/mine', protect, async (req, res) => {
+    try {
+        const posts = await Post.find({ authorId: req.user._id }).sort({ createdAt: -1 });
+        // No privacy filter needed for own posts, but we can stick to format
+        const safePosts = posts.map(p => ({
+            ...p.toObject(),
+            isMine: true
+        }));
+        res.json(safePosts);
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Server Error' });
@@ -140,24 +164,6 @@ router.get('/:id', async (req, res) => {
         }
 
         res.json(privacyFilter(post, viewerId));
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server Error' });
-    }
-});
-
-// @desc    Get My Posts
-// @route   GET /api/posts/mine
-// @access  Protected
-router.get('/mine', protect, async (req, res) => {
-    try {
-        const posts = await Post.find({ authorId: req.user._id }).sort({ createdAt: -1 });
-        // No privacy filter needed for own posts, but we can stick to format
-        const safePosts = posts.map(p => ({
-            ...p.toObject(),
-            isMine: true
-        }));
-        res.json(safePosts);
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Server Error' });
@@ -241,7 +247,9 @@ router.post('/comment/:id', protect, async (req, res) => {
     }
 });
 
-// @desc    Get Comments (Moved from here, but keeping for compatibility if specific post comments needed)
+// NOTE: GET /comment/:id is defined here (after /mine but still reached before /:id
+// handles only exact /:id for single posts — comment/:id is specific enough to be safe.
+// @desc    Get Comments
 // @route   GET /api/posts/comment/:id
 // @access  Public
 router.get('/comment/:id', async (req, res) => {

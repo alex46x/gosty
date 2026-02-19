@@ -15,7 +15,15 @@ const userSchema = mongoose.Schema({
   publicKey: {
     type: String, // For E2EE
     default: null
-  }
+  },
+  followers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  following: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }]
 }, {
   timestamps: true
 });

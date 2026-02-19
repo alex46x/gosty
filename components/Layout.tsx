@@ -8,9 +8,10 @@ interface LayoutProps {
   children: React.ReactNode;
   currentView?: ViewState;
   onNavigate?: (view: ViewState) => void;
+  isPending?: boolean; // New Prop
 }
 
-export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigate }) => {
+export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigate, isPending }) => {
   const { isAuthenticated, logoutUser, user } = useAuth();
   const [unreadMsgCount, setUnreadMsgCount] = useState(0);
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
@@ -38,7 +39,14 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigat
   }, [isAuthenticated, user, currentView]); // Re-run on view change to update immediately after reading
 
   return (
-    <div className="min-h-screen bg-obsidian text-gray-300 font-sans selection:bg-neon-green selection:text-black flex flex-col">
+    <div className="min-h-screen bg-obsidian text-gray-300 font-sans selection:bg-neon-green selection:text-black flex flex-col relative">
+      {/* Loading Indicator */}
+      {isPending && (
+          <div className="fixed top-0 left-0 w-full h-1 bg-neon-green/20 z-[100]">
+              <div className="h-full bg-neon-green animate-[progress_1s_ease-in-out_infinite]" style={{ width: '100%' }}></div>
+          </div>
+      )}
+
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-white/10 bg-obsidian/80 backdrop-blur-md">
         <div className="w-full max-w-3xl mx-auto px-3 md:px-4 h-16 flex items-center justify-between">
@@ -54,7 +62,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigat
             <div className="flex items-center gap-2 sm:gap-4">
               {/* Navigation Actions */}
               {currentView && onNavigate && (
-                 <nav className="flex items-center mr-2 sm:mr-4 border-r border-white/10 pr-2 sm:pr-4 gap-1 sm:gap-1">
+                 <nav className="flex items-center mr-1 sm:mr-4 border-r border-white/10 pr-1 sm:pr-4 gap-0 sm:gap-1">
                     <button
                        onClick={() => onNavigate(ViewState.FEED)}
                        className={`p-2.5 rounded hover:bg-white/5 transition-colors ${currentView === ViewState.FEED ? 'text-white bg-white/10' : 'text-gray-500'}`}

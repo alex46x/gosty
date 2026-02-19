@@ -7,6 +7,7 @@ import { Button } from '../components/UI';
 import { CreatePost } from './CreatePost';
 import { PostCard } from '../components/PostCard';
 import { useAuth } from '../context/AuthContext';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 
 interface FeedProps {
   onUserClick?: (username: string) => void;
@@ -25,7 +26,15 @@ export const Feed: React.FC<FeedProps> = ({ onUserClick, onHashtagClick }) => {
     try {
       // Pass the current user ID to determine which posts they have liked
       const data = await getFeed(user?.id);
-      setPosts(data);
+      if (Array.isArray(data)) {
+        setPosts(data);
+      } else {
+        console.error("Feed data is not an array:", data);
+        setPosts([]);
+      }
+    } catch (err) {
+      console.error("Failed to load feed:", err);
+      // Optional: set error state to show UI feedback
     } finally {
       setLoading(false);
     }
@@ -84,21 +93,26 @@ export const Feed: React.FC<FeedProps> = ({ onUserClick, onHashtagClick }) => {
         </div>
       ) : (
         <div className="space-y-6">
-          {posts.length === 0 ? (
+          {posts?.length === 0 ? (
             <div className="text-center py-24 text-gray-600 font-mono border border-dashed border-white/10 rounded-sm bg-white/5">
               <Hash className="w-12 h-12 mx-auto mb-4 opacity-20" />
               NO SIGNALS DETECTED IN SECTOR.
             </div>
           ) : (
-            posts.map(post => (
-              <PostCard 
-                key={post.id} 
-                post={post} 
-                onUserClick={onUserClick}
-                onHashtagClick={onHashtagClick}
-                onPostUpdate={handlePostUpdate}
-                onPostDelete={handlePostDelete}
-              />
+            posts?.map(post => (
+              <React.Fragment key={post.id || Math.random()}>
+                 {post ? (
+                    <ErrorBoundary componentName={`Post_${post.id}`}>
+                        <PostCard 
+                            post={post} 
+                            onUserClick={onUserClick}
+                            onHashtagClick={onHashtagClick}
+                            onPostUpdate={handlePostUpdate}
+                            onPostDelete={handlePostDelete}
+                        />
+                    </ErrorBoundary>
+                 ) : null}
+              </React.Fragment>
             ))
           )}
         </div>

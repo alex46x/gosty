@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Clock, AlertCircle, Heart, MessageSquare, Send, CornerDownRight, X, Pencil, Check, User as UserIcon, Share2, Repeat, MoreVertical, Trash2, Edit2 } from 'lucide-react';
-import { toggleLikePost, getComments, addComment, updateComment, getSinglePost, editPost, deletePost } from '../services/mockBackend';
+import { Clock, AlertCircle, Heart, MessageSquare, Send, CornerDownRight, X, Pencil, Check, User as UserIcon, Share2, Repeat, MoreVertical, Trash2, Edit2, Globe } from 'lucide-react';
+import { toggleLikePost, getComments, addComment, updateComment, getSinglePost, editPost, deletePost, translateText } from '../services/mockBackend';
 import { Post, Comment } from '../types';
 import { Button } from './UI';
 import { useAuth } from '../context/AuthContext';
 import { ShareDialog } from './ShareDialog';
+
+console.log("PostCard module loaded");
 
 const MAX_COMMENT_LENGTH = 280;
 
@@ -77,6 +79,24 @@ export const CommentNode: React.FC<{
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(comment.content);
   const [isSaving, setIsSaving] = useState(false);
+  const [translatedContent, setTranslatedContent] = useState<string | null>(null);
+  const [isTranslating, setIsTranslating] = useState(false);
+
+  const handleTranslate = async () => {
+    if (translatedContent) {
+        setTranslatedContent(null); // Toggle off
+        return;
+    }
+    setIsTranslating(true);
+    try {
+        const result = await translateText(comment.content);
+        setTranslatedContent(result.translatedText);
+    } catch (e) {
+        alert('Translation failed');
+    } finally {
+        setIsTranslating(false);
+    }
+  };
 
   // Find children for this specific comment
   const children = allComments
@@ -186,9 +206,16 @@ export const CommentNode: React.FC<{
                  </div>
               </div>
             ) : (
-               <p className={`text-gray-300 font-sans break-words leading-relaxed ${isNested ? 'text-xs' : 'text-sm'}`}>
-                 {comment.content}
-               </p>
+               <div className="relative">
+                 <p className={`text-gray-300 font-sans break-words leading-relaxed ${isNested ? 'text-xs' : 'text-sm'}`}>
+                   {translatedContent || comment.content}
+                 </p>
+                 {translatedContent && (
+                    <div className="text-[9px] text-neon-green mt-1 font-mono flex items-center gap-1">
+                        <Globe className="w-3 h-3" /> Translated from auto-detected
+                    </div>
+                 )}
+               </div>
             )}
             
             {/* Actions */}
@@ -208,6 +235,12 @@ export const CommentNode: React.FC<{
                         <Pencil className="w-3 h-3" /> EDIT
                      </button>
                   )}
+                  <button 
+                      onClick={handleTranslate}
+                      className="text-[10px] font-mono text-gray-500 hover:text-white transition-colors flex items-center gap-1.5 p-1 ml-auto"
+                  >
+                      <Globe className="w-3 h-3" /> {isTranslating ? '...' : (translatedContent ? 'ORIGINAL' : 'TRANSLATE')}
+                  </button>
                </div>
             )}
           </div>
@@ -275,6 +308,26 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [isEditingPost, setIsEditingPost] = useState(false);
   const [editPostContent, setEditPostContent] = useState(post.content);
   const [isSavingPost, setIsSavingPost] = useState(false);
+
+  // Translation State
+  const [translatedPostContent, setTranslatedPostContent] = useState<string | null>(null);
+  const [isTranslatingPost, setIsTranslatingPost] = useState(false);
+
+  const handleTranslatePost = async () => {
+    if (translatedPostContent) {
+        setTranslatedPostContent(null); // Toggle off
+        return;
+    }
+    setIsTranslatingPost(true);
+    try {
+        const result = await translateText(post.content);
+        setTranslatedPostContent(result.translatedText);
+    } catch (e) {
+        alert('Translation failed');
+    } finally {
+        setIsTranslatingPost(false);
+    }
+  };
 
   // Ensure isMine is accurately reflected from the sanitized backend data or direct check
   const isOwner = post.isMine || (user && post.authorId === user.id);
@@ -535,12 +588,20 @@ export const PostCard: React.FC<PostCardProps> = ({
             </div>
           </div>
         ) : (
-          <ContentRenderer 
-            content={post.content} 
-            isAnonymous={!!post.isAnonymous}
-            onUserClick={onUserClick}
-            onHashtagClick={onHashtagClick}
-          />
+          <>
+            <ContentRenderer 
+                content={translatedPostContent || post.content} 
+                isAnonymous={!!post.isAnonymous}
+                onUserClick={onUserClick}
+                onHashtagClick={onHashtagClick}
+            />
+            
+            {translatedPostContent && (
+                <div className="ml-4 mt-2 text-[10px] text-neon-green font-mono flex items-center gap-1">
+                    <Globe className="w-3 h-3" /> Translated
+                </div>
+            )}
+          </>
         )}
 
         {/* Embedded Shared Post */}
@@ -593,6 +654,14 @@ export const PostCard: React.FC<PostCardProps> = ({
               <span className="hidden sm:inline">SHARE</span>
             </button>
           )}
+
+          <button
+             onClick={handleTranslatePost}
+             className="flex items-center gap-2 text-xs font-mono transition-colors p-2 rounded hover:bg-white/5 text-gray-500 hover:text-white"
+          >
+             <Globe className="w-4 h-4" />
+             <span className="hidden sm:inline">{isTranslatingPost ? 'TRANSLATING...' : (translatedPostContent ? 'SHOW ORIGINAL' : 'TRANSLATE')}</span>
+          </button>
         </div>
       )}
 

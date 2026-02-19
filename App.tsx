@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SocketProvider } from './context/SocketContext';
 import { Layout } from './components/Layout';
 import { Auth } from './pages/Auth';
 import { Feed } from './pages/Feed';
@@ -17,6 +18,7 @@ const AppContent = () => {
   const { isAuthenticated } = useAuth();
   const [view, setView] = useState<ViewState>(ViewState.LOGIN);
   const [selectedUsername, setSelectedUsername] = useState<string>('');
+  const [isPending, startTransition] = React.useTransition();
   
   // State for passing target user to Messages component
   const [chatTarget, setChatTarget] = useState<string | null>(null);
@@ -27,6 +29,13 @@ const AppContent = () => {
   // State for selected hashtag
   const [selectedHashtag, setSelectedHashtag] = useState<string | null>(null);
 
+  // Wrapper for navigation updates
+  const handleNavigate = (newView: ViewState) => {
+    startTransition(() => {
+        setView(newView);
+    });
+  };
+
   // Check for deep link (query param) on mount or auth change
   useEffect(() => {
     // Only process deep links if authenticated
@@ -36,32 +45,32 @@ const AppContent = () => {
       
       if (deepLinkPostId) {
         setSelectedPostId(deepLinkPostId);
-        setView(ViewState.SINGLE_POST);
+        handleNavigate(ViewState.SINGLE_POST);
       } else if (view === ViewState.LOGIN || view === ViewState.REGISTER) {
         // Default to feed if no deep link and just logged in
-        setView(ViewState.FEED);
+        handleNavigate(ViewState.FEED);
       }
     }
   }, [isAuthenticated]);
 
   const handleSelectUser = (username: string) => {
     setSelectedUsername(username);
-    setView(ViewState.PUBLIC_PROFILE);
+    handleNavigate(ViewState.PUBLIC_PROFILE);
   };
 
   const handleMessageUser = (username: string) => {
     setChatTarget(username);
-    setView(ViewState.MESSAGES);
+    handleNavigate(ViewState.MESSAGES);
   };
 
   const handleViewPost = (postId: string) => {
     setSelectedPostId(postId);
-    setView(ViewState.SINGLE_POST);
+    handleNavigate(ViewState.SINGLE_POST);
   };
 
   const handleHashtagClick = (tag: string) => {
     setSelectedHashtag(tag);
-    setView(ViewState.HASHTAG_FEED);
+    handleNavigate(ViewState.HASHTAG_FEED);
   };
 
   const handleBackFromSinglePost = () => {
@@ -70,10 +79,10 @@ const AppContent = () => {
         // Clear the query param so future navigation doesn't get stuck
         const newUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
         window.history.pushState({path: newUrl}, '', newUrl);
-        setView(ViewState.FEED);
+        handleNavigate(ViewState.FEED);
     } else {
         // Default behavior (usually back to notifications or feed)
-        setView(ViewState.FEED); 
+        handleNavigate(ViewState.FEED); 
     }
   };
 
@@ -90,7 +99,7 @@ const AppContent = () => {
       case ViewState.PUBLIC_PROFILE:
         content = <PublicProfile 
           targetUsername={selectedUsername} 
-          onBack={() => setView(ViewState.SEARCH)} 
+          onBack={() => handleNavigate(ViewState.SEARCH)} 
           onMessage={handleMessageUser}
           onHashtagClick={handleHashtagClick}
         />;
@@ -115,7 +124,7 @@ const AppContent = () => {
       case ViewState.HASHTAG_FEED:
         content = <HashtagFeed 
           hashtag={selectedHashtag || ''}
-          onBack={() => setView(ViewState.FEED)}
+          onBack={() => handleNavigate(ViewState.FEED)}
           onUserClick={handleSelectUser}
           onHashtagClick={handleHashtagClick}
         />;
@@ -127,7 +136,7 @@ const AppContent = () => {
     }
 
     return (
-      <Layout currentView={view} onNavigate={setView}>
+      <Layout currentView={view} onNavigate={handleNavigate} isPending={isPending}>
         {content}
       </Layout>
     );
@@ -136,7 +145,7 @@ const AppContent = () => {
   // Auth Flow
   return (
     <div className="min-h-screen bg-obsidian text-gray-200 flex flex-col justify-center pb-20 px-4">
-      <Auth view={view === ViewState.REGISTER ? ViewState.REGISTER : ViewState.LOGIN} onChangeView={setView} />
+      <Auth view={view === ViewState.REGISTER ? ViewState.REGISTER : ViewState.LOGIN} onChangeView={handleNavigate} />
       
       {/* Phase 10: Roadmap Footer (Visible on login) */}
       <div className="fixed bottom-4 left-0 right-0 text-center opacity-30 text-[10px] font-mono pointer-events-none">
@@ -147,10 +156,13 @@ const AppContent = () => {
 };
 
 // Root App with Providers
+// SocketProvider is inside AuthProvider so it can read token/isAuthenticated
 const App: React.FC = () => {
   return (
     <AuthProvider>
-      <AppContent />
+      <SocketProvider>
+        <AppContent />
+      </SocketProvider>
     </AuthProvider>
   );
 };

@@ -2,6 +2,7 @@ import express from 'express';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { getIO, getSocketId } from '../socketManager.js';
 
 const router = express.Router();
 
@@ -25,6 +26,30 @@ router.post('/', protect, async (req, res) => {
             encryptedKeyForSender,
             isRead: false
         });
+
+        // ── Real-Time Delivery ─────────────────────────────────────────────
+        // The server never decrypts. It just pushes the encrypted payload to
+        // the receiver's open socket (if they are currently connected).
+        const io = getIO();
+        if (io) {
+            const receiverSocketId = getSocketId(receiverId);
+            if (receiverSocketId) {
+                // Push the full encrypted message so receiver can decrypt client-side
+                io.to(receiverSocketId).emit('receive_message', message);
+
+                // Push updated unread count for the receiver's sidebar badge
+                const unreadCount = await Message.countDocuments({
+                    senderId: req.user._id,
+                    receiverId,
+                    isRead: false
+                });
+                io.to(receiverSocketId).emit('unread_count_update', {
+                    fromUserId: req.user._id.toString(),
+                    fromUsername: req.user.username,
+                    unreadCount,
+                });
+            }
+        }
 
         res.status(201).json(message);
     } catch (error) {
