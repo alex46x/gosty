@@ -137,10 +137,12 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigat
       </main>
 
       {/* Footer */}
-      <footer className="py-8 text-center text-[10px] md:text-xs text-gray-600 font-mono">
-        <p>NO LOGS. NO TRACKING. NO IDENTITY.</p>
-        <p className="mt-2 opacity-50">v1.3.0-Responsive</p>
-      </footer>
+      {currentView !== ViewState.MESSAGES && (
+        <footer className="py-8 text-center text-[10px] md:text-xs text-gray-600 font-mono">
+          <p>NO LOGS. NO TRACKING. NO IDENTITY.</p>
+          <p className="mt-2 opacity-50">v1.3.0-Responsive</p>
+        </footer>
+      )}
     </div>
   );
 };

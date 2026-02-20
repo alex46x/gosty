@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Lock, Send, User, AlertTriangle, ShieldCheck, ExternalLink, ArrowLeft, Repeat, Edit3, Search, Reply, MoreVertical, Trash2, X, Edit2 } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Lock, Send, AlertTriangle, ShieldCheck, ExternalLink, ArrowLeft, Repeat, Edit3, Search, Reply, MoreVertical, Trash2, X, Edit2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 import { getConversations, getMessages, sendMessage, getUserPublicKey, markMessagesRead, getSinglePost, editMessage, deleteMessage, unsendMessage } from '../services/mockBackend';
 import { encryptMessage, decryptMessage } from '../services/cryptoService';
 import { Message, DecryptedMessage, ConversationSummary, Post } from '../types';
-import { PostCard } from '../components/PostCard';
 
 
 interface MessagesProps {
@@ -30,7 +29,7 @@ const SharedPostPreview: React.FC<{ post: Post; onClick: () => void }> = ({ post
           <span className="text-xs font-bold text-white group-hover:underline">
             {post.authorUsername || 'Anonymous'}
           </span>
-          <span className="text-[10px] text-gray-500">• {new Date(post.timestamp).toLocaleDateString()}</span>
+          <span className="text-[10px] text-gray-500">- {new Date(post.timestamp).toLocaleDateString()}</span>
         </div>
         <p className="text-sm text-gray-300 line-clamp-2 md:line-clamp-3 leading-relaxed font-normal">
           {post.content}
@@ -66,7 +65,9 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   // Close context menu on any click outside — use mousedown to avoid
   // interfering with input focus (mousedown fires before focus events).
   useEffect(() => {
-    const handleClickOutside = () => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-message-menu="true"]')) return;
       if (contextMenuId !== null) setContextMenuId(null);
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -100,9 +101,24 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const stopTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<DecryptedMessage[]>([]);
   // Keep a ref to activeChat for use inside socket listeners (avoids stale closure)
   const activeChatRef = useRef<ConversationSummary | null>(null);
+  const conversationsRef = useRef<ConversationSummary[]>([]);
+  messagesRef.current = messages;
   activeChatRef.current = activeChat;
+  conversationsRef.current = conversations;
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (stopTypingTimerRef.current) clearTimeout(stopTypingTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    setContextMenuId(null);
+  }, [activeChat?.userId]);
 
   // Scroll to bottom
   useEffect(() => {
@@ -115,8 +131,9 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
     // receive_message: decrypt the incoming E2EE message and append it
     const handleReceiveMessage = async (msg: Message) => {
-      const isMine = msg.senderId === user.id;
+      const isMine = String(msg.senderId) === String(user.id);
       const encryptedKey = isMine ? msg.encryptedKeyForSender : msg.encryptedKeyForReceiver;
+      const partnerId = isMine ? msg.receiverId : msg.senderId;
 
       let content = '[[Decryption Error]]';
       let sharedPostId: string | undefined;
@@ -138,7 +155,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       }
 
       // Normalize _id -> id to prevent optimistic + socket duplicates
-      const normalizedId = (msg as any)._id ?? msg.id ?? `temp-${Date.now()}-${Math.random()}`; // Fallback ID
+      const normalizedId = String((msg as any)._id ?? msg.id ?? `temp-${Date.now()}-${Math.random()}`); // Fallback ID
       const decrypted: DecryptedMessage = { ...msg, id: normalizedId, content, isMine, sharedPostId };
 
       // Only append if this message belongs to the active conversation
@@ -150,37 +167,30 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         });
       }
 
-      // Move or add sender to top of conversations with updated unread
+      // Update conversation preview and keep latest chat at the top.
       setConversations(prev => {
-        const senderId = msg.senderId;
-        const existing = prev.find(c => c.userId === senderId);
-        if (existing) {
-          const active = activeChatRef.current;
-          // Update existing conversation
-          return prev.map(c =>
-            c.userId === senderId
-              ? { ...c, unreadCount: active?.userId === senderId ? 0 : c.unreadCount + 1 }
-              : c
-          );
-        }
-        
-        // New conversation — safely add to list
-        const newConvo: ConversationSummary = {
-          userId: senderId,
-          username: (msg as any).senderUsername || 'Unknown', 
-          unreadCount: 1
+        const active = activeChatRef.current;
+        const existing = prev.find(c => c.userId === partnerId);
+        const usernameFromSocket = isMine
+          ? active?.username
+          : ((msg as any).senderUsername || existing?.username);
+
+        const updatedConversation: ConversationSummary = {
+          userId: partnerId,
+          username: usernameFromSocket || existing?.username || 'Unknown',
+          unreadCount: !isMine && active?.userId !== partnerId
+            ? (existing?.unreadCount ?? 0) + 1
+            : 0
         };
-        return [...prev, newConvo];
+
+        const rest = prev.filter(c => c.userId !== partnerId);
+        return [updatedConversation, ...rest];
       });
 
-      // If we don't have the user in our list, we might want to reload to get their full profile/username correctly
-      // But we do this OUTSIDE the state setter to avoid conflicts
-      const senderId = msg.senderId;
-      if (!conversations.some(c => c.userId === senderId)) {
-          // Debounce or just let the silent update happen? 
-          // For now, let's just let the optimistic update hold. 
-          // If we really need to sync, we can call loadConvos() here, but NOT waiting for it.
-          loadConvos();
+      // Fallback sync only for brand-new incoming contacts with missing sender identity.
+      const knownConversation = conversationsRef.current.some(c => c.userId === partnerId);
+      if (!isMine && !knownConversation && !(msg as any).senderUsername) {
+        loadConvos();
       }
     };
 
@@ -210,18 +220,49 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     };
 
     // message_updated: handle edits and unsend events
-    const handleMessageUpdated = (updatedMsg: any) => {
+    const handleMessageUpdated = async (updatedMsg: any) => {
+      const messageId = String(updatedMsg.messageId || '');
+      if (!messageId) return;
+
+      let decryptedContent: string | null = null;
+      const targetMessage = messagesRef.current.find(m => String(m.id) === messageId || String((m as any)._id) === messageId);
+
+      if (
+        targetMessage &&
+        !updatedMsg.isUnsent &&
+        updatedMsg.encryptedContent &&
+        updatedMsg.iv
+      ) {
+        try {
+          const keyForDecryption = targetMessage.isMine
+            ? (updatedMsg.encryptedKeyForSender || targetMessage.encryptedKeyForSender)
+            : (updatedMsg.encryptedKeyForReceiver || targetMessage.encryptedKeyForReceiver);
+
+          if (keyForDecryption) {
+            decryptedContent = await decryptMessage(
+              updatedMsg.encryptedContent,
+              updatedMsg.iv,
+              keyForDecryption,
+              privateKey
+            );
+          }
+        } catch (e) {
+          console.error('[Socket] Failed to decrypt edited message');
+        }
+      }
+
       setMessages(prev => prev.map(m => {
-        if (m.id === updatedMsg.messageId || (m as any)._id === updatedMsg.messageId) {
-           return { 
-             ...m, 
+        if (String(m.id) === messageId || String((m as any)._id) === messageId) {
+           return {
+             ...m,
              ...updatedMsg,
-             // If unsent, clear content
-             content: updatedMsg.isUnsent ? '' : (updatedMsg.isEdited ? (updatedMsg.encryptedContent || m.content) : m.content), 
-             // Ideally we re-decrypt here. For now we assume optimistic update or refetch.
+             iv: updatedMsg.iv || m.iv,
+             encryptedKeyForReceiver: updatedMsg.encryptedKeyForReceiver || m.encryptedKeyForReceiver,
+             encryptedKeyForSender: updatedMsg.encryptedKeyForSender || m.encryptedKeyForSender,
+             content: updatedMsg.isUnsent ? '' : (decryptedContent ?? m.content),
              isEdited: updatedMsg.isEdited || m.isEdited,
              isUnsent: updatedMsg.isUnsent || m.isUnsent
-           }; 
+           };
         }
         return m;
       }));
@@ -231,17 +272,18 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           setEditingMessage(null);
           setNewMessage('');
       }
+
     };
 
     socket.on('receive_message', handleReceiveMessage);
     socket.on('unread_count_update', handleUnreadUpdate);
     socket.on('typing', handleTyping);
     socket.on('stop_typing', handleStopTyping);
+    socket.on('message_updated', handleMessageUpdated);
 
     return () => {
       socket.off('receive_message', handleReceiveMessage);
       socket.off('unread_count_update', handleUnreadUpdate);
-      socket.off('typing', handleTyping);
       socket.off('typing', handleTyping);
       socket.off('stop_typing', handleStopTyping);
       socket.off('message_updated', handleMessageUpdated);
@@ -249,8 +291,8 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   }, [socket, user, privateKey]);
 
   // Load conversations list
-  const loadConvos = async () => {
-    if (!user) return;
+  const loadConvos = async (): Promise<ConversationSummary[]> => {
+    if (!user) return [];
     try {
       const convos = await getConversations(user.id);
       setConversations(convos);
@@ -263,7 +305,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
   useEffect(() => {
     loadConvos();
-  }, [user]);
+  }, [user?.id]);
 
   // Handle Initial Chat Prop (From Profile Button) - ONE TIME SETUP
   // Fix: changed dependency array to only trigger when prop actually changes, and guarded against unnecessary resets
@@ -302,7 +344,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         
           // Decrypt messages
         const decryptedPromises = encryptedMsgs.map(async (msg) => {
-          const isMine = msg.senderId === user.id;
+          const isMine = String(msg.senderId) === String(user.id);
           const encryptedKey = isMine ? msg.encryptedKeyForSender : msg.encryptedKeyForReceiver;
           
           let content = "[[Decryption Error]]";
@@ -330,7 +372,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           }
 
           // Normalize _id -> id (Critical check for historical messages)
-          const normalizedId = (msg as any)._id ?? msg.id;
+          const normalizedId = String((msg as any)._id ?? msg.id);
 
           return {
             ...msg,
@@ -394,7 +436,13 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
          const recipientData = await getUserPublicKey(activeChat.username);
          const encryptedPayload = await encryptMessage(newMessage, recipientData.publicKey, user.publicKey!);
          
-         await editMessage(editingMessage.id, encryptedPayload.encryptedContent);
+         await editMessage(
+           editingMessage.id,
+           encryptedPayload.encryptedContent,
+           encryptedPayload.iv,
+           encryptedPayload.encryptedKeyForReceiver,
+           encryptedPayload.encryptedKeyForSender
+         );
          
          // Optimistic Update
          setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content: newMessage, isEdited: true } : m));
@@ -575,10 +623,10 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   };
 
   return (
-    <div className="flex flex-col md:flex-row h-[calc(100dvh-130px)] md:h-[calc(100dvh-140px)] min-h-[420px] rounded-2xl border border-white/8 bg-[#111111]">
+    <div className="flex flex-col md:flex-row w-full h-[calc(100dvh-110px)] md:h-[calc(100dvh-140px)] min-h-[520px] md:min-h-[420px] rounded-none md:rounded-2xl border border-white/8 bg-[#111111] overflow-hidden">
 
       {/* ── SIDEBAR ── */}
-      <div className={`flex flex-col bg-[#111111] md:w-[320px] shrink-0 md:border-r border-white/8 h-full ${activeChat ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`flex flex-col bg-[#111111] w-full md:w-[320px] shrink-0 md:border-r border-white/8 h-full ${activeChat ? 'hidden md:flex' : 'flex'}`}>
 
         {/* Sidebar Header */}
         <div className="px-4 pt-5 pb-3 shrink-0">
@@ -637,7 +685,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                 {startingChat ? '...' : 'Start'}
               </button>
             </div>
-            {error && <p className="text-xs text-red-400 mt-2 px-2">⚠ {error}</p>}
+            {error && <p className="text-xs text-red-400 mt-2 px-2">Error: {error}</p>}
           </div>
         )}
 
@@ -660,7 +708,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           {filteredConversations.map(chat => (
             <div
               key={chat.userId}
-              onClick={() => setActiveChat(chat)}
+              onClick={() => { setActiveChat(chat); setError(null); }}
               className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors group ${
                 activeChat?.userId === chat.userId
                   ? 'bg-white/8'
@@ -691,7 +739,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                   </span>
                   <button
                     onClick={e => { e.stopPropagation(); onViewProfile(chat.username); }}
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-all"
+                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 p-1 rounded-full hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-all"
                     title="View Profile"
                   >
                     <ExternalLink className="w-3 h-3" />
@@ -778,7 +826,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
             {/* Messages Area */}
             <div 
-                className="flex-1 overflow-y-auto px-4 py-4 space-y-1 block"
+                className="flex-1 overflow-y-auto px-2 sm:px-4 py-4 space-y-1 block"
             >
               {loading ? (
                 <div className="flex flex-col items-center justify-center h-full gap-3">
@@ -819,7 +867,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                         </div>
 
                         {/* Bubble */}
-                        <div className="flex flex-col min-w-0 max-w-[72%] sm:max-w-[60%] relative group">
+                        <div data-message-menu="true" className="flex flex-col min-w-0 max-w-[85%] sm:max-w-[72%] md:max-w-[60%] relative group">
                           
                           {/* Message Actions Menu (Long press / click support) */}
                           {/* Trigger */}
@@ -828,7 +876,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                                 e.stopPropagation(); 
                                 setContextMenuId(prev => prev === msg.id ? null : msg.id); 
                             }}
-                            className={`absolute top-0 -right-8 p-1 text-gray-500 hover:text-white opacity-50 hover:opacity-100 transition-opacity ${msg.isMine ? '-left-8 right-auto' : '-right-8'}`}
+                            className={`absolute top-1 p-1 rounded-full bg-black/45 border border-white/10 text-gray-400 hover:text-white opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all ${msg.isMine ? '-left-7' : '-right-7'}`}
                           >
                              <MoreVertical className="w-4 h-4" />
                           </button>
@@ -838,7 +886,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                           {contextMenuId === msg.id && msg.id && (
                              <div 
                                 onClick={(e) => e.stopPropagation()}
-                                className={`absolute z-50 bg-[#222] border border-white/10 rounded-lg shadow-xl py-1 w-32 ${msg.isMine ? 'right-full mr-2' : 'left-full ml-2'} top-0`}
+                                className={`absolute z-50 bg-[#222] border border-white/10 rounded-lg shadow-xl py-1 w-36 max-w-[calc(100vw-3rem)] ${msg.isMine ? '-left-2' : '-right-2'} top-8`}
                              >
                                 <button onClick={() => handleReply(msg)} className="w-full text-left px-3 py-2 text-xs text-white hover:bg-white/10 flex items-center gap-2">
                                     <Reply className="w-3 h-3" /> Reply
@@ -928,7 +976,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                               )}
                               {msg.isMine && (
                                 <span className="text-[10px] text-gray-600">
-                                  · {msg.isRead ? 'Seen' : 'Sent'}
+                                  | {msg.isRead ? 'Seen' : 'Sent'}
                                 </span>
                               )}
                             </div>
@@ -952,7 +1000,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
             {/* Input Bar */}
             <form
               onSubmit={handleSendMessage}
-              className="flex flex-col px-4 py-3 border-t border-white/8 bg-[#0d0d0d] shrink-0" // Changed to column layout for stack
+              className="flex flex-col px-3 sm:px-4 pt-3 pb-4 md:pb-3 border-t border-white/8 bg-[#0d0d0d] shrink-0"
             >
               {/* Reply/Edit Preview Area */}
               {replyingTo && (
@@ -961,7 +1009,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                           <span className="text-purple-400 font-bold block mb-0.5">Replying to {replyingTo.isMine ? 'Yourself' : activeChat.username}</span>
                           <span className="text-gray-400 line-clamp-1">{replyingTo.content}</span>
                       </div>
-                      <button onClick={() => setReplyingTo(null)} className="p-1 hover:bg-white/10 rounded">
+                      <button type="button" onClick={() => setReplyingTo(null)} className="p-1 hover:bg-white/10 rounded">
                           <X className="w-4 h-4 text-gray-500" />
                       </button>
                   </div>
@@ -972,7 +1020,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                            <Edit2 className="w-3 h-3 text-blue-400" />
                            <span className="text-blue-400 font-bold">Editing message</span>
                        </div>
-                       <button onClick={() => { setEditingMessage(null); setNewMessage(''); }} className="p-1 hover:bg-white/10 rounded">
+                       <button type="button" onClick={() => { setEditingMessage(null); setNewMessage(''); }} className="p-1 hover:bg-white/10 rounded">
                            <X className="w-4 h-4 text-gray-500" />
                        </button>
                   </div>
@@ -1011,3 +1059,4 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     </div>
   );
 };
+

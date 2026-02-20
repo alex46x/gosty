@@ -156,7 +156,7 @@ router.get('/unread/count', protect, async (req, res) => {
 // @access  Protected
 router.put('/:id/edit', protect, async (req, res) => {
     try {
-        const { encryptedContent } = req.body;
+        const { encryptedContent, iv, encryptedKeyForReceiver, encryptedKeyForSender } = req.body;
         const message = await Message.findById(req.params.id);
 
         if (!message) {
@@ -174,7 +174,14 @@ router.put('/:id/edit', protect, async (req, res) => {
         //    return res.status(400).json({ message: 'Edit time limit exceeded' });
         // }
 
+        if (!encryptedContent || !iv || !encryptedKeyForReceiver || !encryptedKeyForSender) {
+            return res.status(400).json({ message: 'Missing encrypted edit payload fields' });
+        }
+
         message.encryptedContent = encryptedContent;
+        message.iv = iv;
+        message.encryptedKeyForReceiver = encryptedKeyForReceiver;
+        message.encryptedKeyForSender = encryptedKeyForSender;
         message.isEdited = true;
         message.editedAt = Date.now();
         await message.save();
@@ -188,6 +195,9 @@ router.put('/:id/edit', protect, async (req, res) => {
             const updatePayload = {
                 messageId: message._id,
                 encryptedContent: message.encryptedContent,
+                iv: message.iv,
+                encryptedKeyForReceiver: message.encryptedKeyForReceiver,
+                encryptedKeyForSender: message.encryptedKeyForSender,
                 isEdited: true,
                 editedAt: message.editedAt
             };

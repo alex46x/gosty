@@ -243,10 +243,21 @@ export const sendMessage = async (
 
 // --- NEW MESSAGE ACTIONS ---
 
-export const editMessage = async (messageId: string, encryptedContent: string): Promise<Message> => {
+export const editMessage = async (
+    messageId: string,
+    encryptedContent: string,
+    iv: string,
+    encryptedKeyForReceiver: string,
+    encryptedKeyForSender: string
+): Promise<Message> => {
     return fetchAPI(`/messages/${messageId}/edit`, {
         method: 'PUT',
-        body: JSON.stringify({ encryptedContent })
+        body: JSON.stringify({
+            encryptedContent,
+            iv,
+            encryptedKeyForReceiver,
+            encryptedKeyForSender
+        })
     });
 };
 
