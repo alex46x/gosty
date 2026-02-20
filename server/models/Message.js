@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 
+
 const messageSchema = mongoose.Schema({
   senderId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -10,6 +11,12 @@ const messageSchema = mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+  // Reply reference
+  replyTo: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Message',
+    required: false
   },
   encryptedContent: {
     type: String,
@@ -28,6 +35,24 @@ const messageSchema = mongoose.Schema({
     required: true
   },
   isRead: {
+    type: Boolean,
+    default: false
+  },
+  // Edit tracking
+  isEdited: {
+    type: Boolean,
+    default: false
+  },
+  editedAt: {
+    type: Date
+  },
+  // "Delete for me" - array of user IDs who deleted this message
+  deletedFor: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  // "Unsend for everyone"
+  isUnsent: {
     type: Boolean,
     default: false
   }

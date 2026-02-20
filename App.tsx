@@ -108,6 +108,7 @@ const AppContent = () => {
         content = <Messages 
           initialChatUsername={chatTarget || undefined} 
           onViewProfile={handleSelectUser}
+          onNavigateToPost={handleViewPost}
         />;
         break;
       case ViewState.NOTIFICATIONS:

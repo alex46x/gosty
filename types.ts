@@ -65,6 +65,12 @@ export interface Message {
   // The AES key, encrypted with the Sender's Public Key (RSA)
   // Required so the sender can read their own message history on other devices (if key is shared)
   encryptedKeyForSender: string; // Base64
+  
+  // New Fields
+  replyTo?: Message;
+  isEdited?: boolean;
+  editedAt?: string;
+  isUnsent?: boolean;
 }
 
 // Decrypted structure for frontend use
@@ -72,6 +78,9 @@ export interface DecryptedMessage extends Omit<Message, 'encryptedContent'> {
   content: string; // Plaintext
   isMine: boolean;
   sharedPostId?: string; // If the message is a shared post
+  replyToId?: string;
+  replyToContent?: string;
+  replyToSender?: string;
 }
 
 export interface AuthResponse {

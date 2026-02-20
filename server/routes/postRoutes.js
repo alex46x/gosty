@@ -1,10 +1,11 @@
 import express from 'express';
-import jwt from 'jsonwebtoken'; // Added for manual token decoding
+import jwt from 'jsonwebtoken';
 import Post from '../models/Post.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import Comment from '../models/Comment.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { rankFeed } from '../services/feedRankingService.js';
 
 const router = express.Router();
 
@@ -16,19 +17,22 @@ const extractTags = (content) => {
 };
 
 // Helper to filter privacy (hide author if anonymous)
+// Works with both Mongoose documents (needs .toObject()) and plain lean objects
 const privacyFilter = (post, viewerId) => {
-    const isMine = viewerId && post.authorId.toString() === viewerId.toString();
-    const isAuthorUnknown = post.isAnonymous && !isMine;
+    const doc = typeof post.toObject === 'function' ? post.toObject() : post;
+    const isMine = viewerId && doc.authorId && doc.authorId.toString() === viewerId.toString();
+    const isAuthorUnknown = doc.isAnonymous && !isMine;
 
     return {
-        ...post.toObject(),
-        authorId: isAuthorUnknown ? undefined : post.authorId,
-        authorUsername: isAuthorUnknown ? undefined : post.authorUsername,
+        ...doc,
+        authorId: isAuthorUnknown ? undefined : doc.authorId,
+        authorUsername: isAuthorUnknown ? undefined : doc.authorUsername,
         isMine,
-        hasLiked: viewerId ? post.likedBy.includes(viewerId) : false,
-        likedBy: undefined // Don't send whole array to frontend for performance/privacy
+        hasLiked: viewerId ? (doc.likedBy || []).some(id => id && id.toString() === viewerId.toString()) : false,
+        likedBy: undefined // Don't send the full array to frontend
     };
 };
+
 
 // @desc    Create a post
 // @route   POST /api/posts
@@ -80,49 +84,91 @@ router.get('/', async (req, res) => {
          const { username, hashtag } = req.query;
          let query = {};
          
-         // Optional: Identify Viewer for privacy filtering and "hasLiked" status
+         // Identify Viewer for privacy filtering, "hasLiked" status, and personalization
          let viewerId = null;
+         let viewerFollowing = []; // IDs of users the viewer follows
+
          if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
              try {
                  const token = req.headers.authorization.split(' ')[1];
                  const decoded = jwt.verify(token, process.env.JWT_SECRET);
                  viewerId = decoded.id;
+
+                 // Load following list for personalized ranking
+                 const viewerUser = await User.findById(viewerId).select('following').lean();
+                 if (viewerUser) {
+                     viewerFollowing = viewerUser.following || [];
+                 }
              } catch (e) {
-                 // Invalid token, treat as anonymous/guest
                  console.warn("Feed access with invalid token");
              }
          }
          
+         // ── Profile Feed (by username) ──
          if (username) {
-             const user = await User.findOne({ username: username });
+             const user = await User.findOne({ username }).lean();
              if (user) {
                  query.authorId = user._id;
-                 query.isAnonymous = false; // Public profiles only show public posts
+                 query.isAnonymous = false;
              } else {
-                 return res.json([]); // User not found
+                 return res.json([]);
              }
-         } else if (hashtag) {
-             const tag = hashtag.startsWith('#') ? hashtag : `#${hashtag}`;
-             query.hashtags = tag.toLowerCase();
-             // query.isAnonymous = false; // Allow anonymous posts in hashtag feed
-             
-             console.log(`[DEBUG] Searching for hashtag: ${query.hashtags}`);
+
+             const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
+             const safePosts = posts.map(p => privacyFilter(p, viewerId));
+             return res.json(safePosts);
          }
 
-         const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
-         console.log(`[DEBUG] Found ${posts.length} posts for query:`, query);
+         // ── Hashtag Feed ──
+         if (hashtag) {
+             const tag = hashtag.startsWith('#') ? hashtag : `#${hashtag}`;
+             query.hashtags = tag.toLowerCase();
+             console.log(`[DEBUG] Searching for hashtag: ${query.hashtags}`);
 
-         const safePosts = posts.map(p => {
-             // Use the shared privacyFilter if possible, or replicate logic
-             return privacyFilter(p, viewerId);
-         });
-         
+             const posts = await Post.find(query).sort({ createdAt: -1 }).limit(50);
+             console.log(`[DEBUG] Found ${posts.length} posts for query:`, query);
+             const safePosts = posts.map(p => privacyFilter(p, viewerId));
+             return res.json(safePosts);
+         }
+
+         // ── Smart Ranked Main Feed ──
+         //
+         // Fetch a larger pool so the ranking algorithm has enough posts to work with.
+         // We fetch 100, rank them, and return the top 50.
+         // For guests (no viewerId), fall back to simple recency.
+
+         const POOL_SIZE = 100;
+         const FEED_SIZE = 50;
+
+         // Only look at posts from the last 7 days in the pool to keep things fresh.
+         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+         const pool = await Post.find({ createdAt: { $gte: sevenDaysAgo } })
+             .sort({ createdAt: -1 })
+             .limit(POOL_SIZE)
+             .lean();
+
+         let ranked;
+         if (viewerId && viewerFollowing.length > 0) {
+             // Authenticated user: run personalized ranking
+             ranked = rankFeed(pool, viewerFollowing);
+         } else if (viewerId) {
+             // Logged in but follows nobody: light engagement-based sort (still better than pure recency)
+             ranked = rankFeed(pool, []);
+         } else {
+             // Guest: simple recency (pool is already sorted newest-first)
+             ranked = pool;
+         }
+
+         const feedPosts = ranked.slice(0, FEED_SIZE);
+         const safePosts = feedPosts.map(p => privacyFilter(p, viewerId));
          res.json(safePosts);
+
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Server Error' });
     }
 });
+
 
 // @desc    Get My Posts
 // @route   GET /api/posts/mine

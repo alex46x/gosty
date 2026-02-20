@@ -225,7 +225,8 @@ export const sendMessage = async (
   encryptedContent: string,
   iv: string,
   encryptedKeyForReceiver: string,
-  encryptedKeyForSender: string
+  encryptedKeyForSender: string,
+  replyTo?: string
 ): Promise<Message> => {
     return fetchAPI('/messages', {
         method: 'POST',
@@ -234,8 +235,30 @@ export const sendMessage = async (
             encryptedContent,
             iv,
             encryptedKeyForReceiver,
-            encryptedKeyForSender
+            encryptedKeyForSender,
+            replyTo // Optional reply ID
         })
+    });
+};
+
+// --- NEW MESSAGE ACTIONS ---
+
+export const editMessage = async (messageId: string, encryptedContent: string): Promise<Message> => {
+    return fetchAPI(`/messages/${messageId}/edit`, {
+        method: 'PUT',
+        body: JSON.stringify({ encryptedContent })
+    });
+};
+
+export const deleteMessage = async (messageId: string): Promise<{ message: string }> => {
+    return fetchAPI(`/messages/${messageId}/delete`, {
+        method: 'PUT'
+    });
+};
+
+export const unsendMessage = async (messageId: string): Promise<Message> => {
+    return fetchAPI(`/messages/${messageId}/unsend`, {
+        method: 'PUT'
     });
 };
 

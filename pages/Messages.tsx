@@ -1,21 +1,52 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Lock, Send, User, MessageSquare, AlertTriangle, ChevronRight, Hash, ShieldCheck, ExternalLink, ArrowLeft, Repeat } from 'lucide-react';
+import { Lock, Send, User, AlertTriangle, ShieldCheck, ExternalLink, ArrowLeft, Repeat, Edit3, Search, Reply, MoreVertical, Trash2, X, Edit2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
-import { getConversations, getMessages, sendMessage, getUserPublicKey, markMessagesRead, getSinglePost, translateText } from '../services/mockBackend';
+import { getConversations, getMessages, sendMessage, getUserPublicKey, markMessagesRead, getSinglePost, editMessage, deleteMessage, unsendMessage } from '../services/mockBackend';
 import { encryptMessage, decryptMessage } from '../services/cryptoService';
 import { Message, DecryptedMessage, ConversationSummary, Post } from '../types';
-import { Button } from '../components/UI';
 import { PostCard } from '../components/PostCard';
-import { Globe } from 'lucide-react';
+
 
 interface MessagesProps {
   initialChatUsername?: string;
   onViewProfile: (username: string) => void;
+  onNavigateToPost?: (postId: string) => void; // New prop for navigation
 }
 
-export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewProfile }) => {
+// ─── Compact Shared Post Preview ───
+const SharedPostPreview: React.FC<{ post: Post; onClick: () => void }> = ({ post, onClick }) => {
+  return (
+    <div 
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className="mt-2 text-left bg-black/40 border border-white/10 rounded-lg overflow-hidden cursor-pointer hover:bg-black/60 transition-colors group"
+    >
+      <div className="p-3">
+        <div className="flex items-center gap-2 mb-1.5">
+          <div className="w-5 h-5 rounded bg-gradient-to-br from-blue-500/20 to-purple-600/20 flex items-center justify-center text-[10px] text-white font-bold border border-white/10">
+             {post.authorUsername?.slice(0,1).toUpperCase() || '?'}
+          </div>
+          <span className="text-xs font-bold text-white group-hover:underline">
+            {post.authorUsername || 'Anonymous'}
+          </span>
+          <span className="text-[10px] text-gray-500">• {new Date(post.timestamp).toLocaleDateString()}</span>
+        </div>
+        <p className="text-sm text-gray-300 line-clamp-2 md:line-clamp-3 leading-relaxed font-normal">
+          {post.content}
+        </p>
+      </div>
+      <div className="px-3 py-1.5 bg-white/5 border-t border-white/5 flex items-center justify-between">
+        <span className="text-[10px] text-gray-500 font-mono flex items-center gap-1">
+           <Repeat className="w-3 h-3" /> Shared Signal
+        </span>
+        <ExternalLink className="w-3 h-3 text-gray-600 group-hover:text-white" />
+      </div>
+    </div>
+  );
+};
+
+export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewProfile, onNavigateToPost }) => {
   const { user, privateKey } = useAuth();
   const { socket } = useSocket();
   
@@ -24,39 +55,21 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [activeChat, setActiveChat] = useState<ConversationSummary | null>(null);
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   
-  // Shared Post Data Cache
-  const [sharedPostsCache, setSharedPostsCache] = useState<Record<string, Post>>({});
+  // Shared Post Data Cache: value is Post object or 'ERROR' if fetch failed
+  const [sharedPostsCache, setSharedPostsCache] = useState<Record<string, Post | 'ERROR'>>({});
 
-  // Translation State
-  const [translatedMessages, setTranslatedMessages] = useState<Record<string, string>>({});
-  const [translatingIds, setTranslatingIds] = useState<Set<string>>(new Set());
+  // Message Actions State
+  const [replyingTo, setReplyingTo] = useState<DecryptedMessage | null>(null);
+  const [editingMessage, setEditingMessage] = useState<DecryptedMessage | null>(null);
+  const [contextMenuId, setContextMenuId] = useState<string | null>(null); // ID of message with open menu
 
-  const handleTranslateMessage = async (msgId: string, content: string) => {
-    if (translatedMessages[msgId]) {
-        // Toggle off
-        setTranslatedMessages(prev => {
-            const next = { ...prev };
-            delete next[msgId];
-            return next;
-        });
-        return;
-    }
+  // Close context menu on any click outside
+  useEffect(() => {
+    const handleClickOutside = () => setContextMenuId(null);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
 
-    setTranslatingIds(prev => new Set(prev).add(msgId));
-    try {
-        const result = await translateText(content);
-        setTranslatedMessages(prev => ({ ...prev, [msgId]: result.translatedText }));
-    } catch (e) {
-        alert('Translation failed');
-    } finally {
-        setTranslatingIds(prev => {
-            const next = new Set(prev);
-            next.delete(msgId);
-            return next;
-        });
-    }
-  };
-  
   // Logic State
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -108,14 +121,15 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         console.error('[Socket] Failed to decrypt incoming message');
       }
 
-      const decrypted: DecryptedMessage = { ...msg, content, isMine, sharedPostId };
+      // Normalize _id -> id to prevent optimistic + socket duplicates
+      const normalizedId = (msg as any)._id ?? msg.id ?? `temp-${Date.now()}-${Math.random()}`; // Fallback ID
+      const decrypted: DecryptedMessage = { ...msg, id: normalizedId, content, isMine, sharedPostId };
 
       // Only append if this message belongs to the active conversation
       const chat = activeChatRef.current;
       if (chat && (msg.senderId === chat.userId || msg.receiverId === chat.userId)) {
         setMessages(prev => {
-          // Deduplicate: skip if a message with this id already exists
-          if (prev.some(m => m.id === (msg as any)._id || m.id === msg.id)) return prev;
+          if (prev.some(m => m.id === normalizedId)) return prev;
           return [...prev, decrypted];
         });
       }
@@ -126,16 +140,32 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         const existing = prev.find(c => c.userId === senderId);
         if (existing) {
           const active = activeChatRef.current;
+          // Update existing conversation
           return prev.map(c =>
             c.userId === senderId
               ? { ...c, unreadCount: active?.userId === senderId ? 0 : c.unreadCount + 1 }
               : c
           );
         }
-        // New conversation — refresh list from server
-        loadConvos();
-        return prev;
+        
+        // New conversation — safely add to list
+        const newConvo: ConversationSummary = {
+          userId: senderId,
+          username: (msg as any).senderUsername || 'Unknown', 
+          unreadCount: 1
+        };
+        return [...prev, newConvo];
       });
+
+      // If we don't have the user in our list, we might want to reload to get their full profile/username correctly
+      // But we do this OUTSIDE the state setter to avoid conflicts
+      const senderId = msg.senderId;
+      if (!conversations.some(c => c.userId === senderId)) {
+          // Debounce or just let the silent update happen? 
+          // For now, let's just let the optimistic update hold. 
+          // If we really need to sync, we can call loadConvos() here, but NOT waiting for it.
+          loadConvos();
+      }
     };
 
     // unread_count_update: update badge in sidebar without full refetch
@@ -163,6 +193,30 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       if (senderId === activeChatRef.current?.userId) setIsOtherTyping(false);
     };
 
+    // message_updated: handle edits and unsend events
+    const handleMessageUpdated = (updatedMsg: any) => {
+      setMessages(prev => prev.map(m => {
+        if (m.id === updatedMsg.messageId || (m as any)._id === updatedMsg.messageId) {
+           return { 
+             ...m, 
+             ...updatedMsg,
+             // If unsent, clear content
+             content: updatedMsg.isUnsent ? '' : (updatedMsg.isEdited ? (updatedMsg.encryptedContent || m.content) : m.content), 
+             // Ideally we re-decrypt here. For now we assume optimistic update or refetch.
+             isEdited: updatedMsg.isEdited || m.isEdited,
+             isUnsent: updatedMsg.isUnsent || m.isUnsent
+           }; 
+        }
+        return m;
+      }));
+      
+      // If we were editing this message, stop editing mode
+      if (editingMessage?.id === updatedMsg.messageId) {
+          setEditingMessage(null);
+          setNewMessage('');
+      }
+    };
+
     socket.on('receive_message', handleReceiveMessage);
     socket.on('unread_count_update', handleUnreadUpdate);
     socket.on('typing', handleTyping);
@@ -172,7 +226,9 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       socket.off('receive_message', handleReceiveMessage);
       socket.off('unread_count_update', handleUnreadUpdate);
       socket.off('typing', handleTyping);
+      socket.off('typing', handleTyping);
       socket.off('stop_typing', handleStopTyping);
+      socket.off('message_updated', handleMessageUpdated);
     };
   }, [socket, user, privateKey]);
 
@@ -193,27 +249,31 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     loadConvos();
   }, [user]);
 
-  // Handle Initial Chat Prop (From Profile Button)
+  // Handle Initial Chat Prop (From Profile Button) - ONE TIME SETUP
+  // Fix: changed dependency array to only trigger when prop actually changes, and guarded against unnecessary resets
   useEffect(() => {
+    if (!initialChatUsername || !user) return;
+    
+    // Don't reset if we are already chatting with this user
+    if (activeChat?.username.toLowerCase() === initialChatUsername.toLowerCase()) return;
+
     const initChat = async () => {
-      if (initialChatUsername && user) {
-        const currentConvos = await loadConvos();
-        const existing = currentConvos?.find(c => c.username.toLowerCase() === initialChatUsername.toLowerCase());
-        
-        if (existing) {
-          setActiveChat(existing);
-        } else {
-          try {
-             const keyData = await getUserPublicKey(initialChatUsername);
-             setActiveChat({ userId: keyData.id, username: initialChatUsername, unreadCount: 0 });
-          } catch (e) {
-             setError(`Cannot message ${initialChatUsername}. User key not found.`);
-          }
+      const currentConvos = await loadConvos();
+      const existing = currentConvos?.find(c => c.username.toLowerCase() === initialChatUsername.toLowerCase());
+      
+      if (existing) {
+        setActiveChat(existing);
+      } else {
+        try {
+            const keyData = await getUserPublicKey(initialChatUsername);
+            setActiveChat({ userId: keyData.id, username: initialChatUsername, unreadCount: 0 });
+        } catch (e) {
+            setError(`Cannot message ${initialChatUsername}. User key not found.`);
         }
       }
     };
     initChat();
-  }, [initialChatUsername, user]);
+  }, [initialChatUsername, user?.id]); // Depend on user.id not full user object to prevent loop
 
   // Load active chat messages & Mark Read
   useEffect(() => {
@@ -224,7 +284,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       try {
         const encryptedMsgs = await getMessages(user.id, activeChat.userId);
         
-        // Decrypt messages
+          // Decrypt messages
         const decryptedPromises = encryptedMsgs.map(async (msg) => {
           const isMine = msg.senderId === user.id;
           const encryptedKey = isMine ? msg.encryptedKeyForSender : msg.encryptedKeyForReceiver;
@@ -253,9 +313,13 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
             console.error("Failed to decrypt msg", msg.id);
           }
 
+          // Normalize _id -> id (Critical check for historical messages)
+          const normalizedId = (msg as any)._id ?? msg.id;
+
           return {
             ...msg,
-            content,
+            id: normalizedId, // Ensure ID is present
+            content: msg.isUnsent ? '' : content, // Don't show content if unsent
             isMine,
             sharedPostId
           } as DecryptedMessage;
@@ -264,7 +328,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         const decrypted = await Promise.all(decryptedPromises);
         setMessages(decrypted);
 
-        // Fetch shared post data
+        // Fetch shared post data (with error state tracking)
         const postIdsToFetch = decrypted
           .filter(m => m.sharedPostId)
           .map(m => m.sharedPostId as string);
@@ -274,7 +338,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
              if (!sharedPostsCache[pid]) {
                getSinglePost(pid)
                  .then(p => setSharedPostsCache(prev => ({ ...prev, [pid]: p })))
-                 .catch(() => {});
+                 .catch(() => setSharedPostsCache(prev => ({ ...prev, [pid]: 'ERROR' })));
              }
           });
         }
@@ -309,6 +373,22 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
     try {
+      // ─── EDIT MODE ───
+      if (editingMessage) {
+         const recipientData = await getUserPublicKey(activeChat.username);
+         const encryptedPayload = await encryptMessage(newMessage, recipientData.publicKey, user.publicKey!);
+         
+         await editMessage(editingMessage.id, encryptedPayload.encryptedContent);
+         
+         // Optimistic Update
+         setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content: newMessage, isEdited: true } : m));
+         setEditingMessage(null);
+         setNewMessage('');
+         setSending(false);
+         return;
+      }
+
+      // ─── SEND MODE ───
       const recipientData = await getUserPublicKey(activeChat.username);
       if (!user.publicKey) throw new Error('You do not have a public key. Please re-register.');
 
@@ -324,25 +404,71 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         encryptedPayload.encryptedContent,
         encryptedPayload.iv,
         encryptedPayload.encryptedKeyForReceiver,
-        encryptedPayload.encryptedKeyForSender
+        encryptedPayload.encryptedKeyForSender,
+        replyingTo?.id // Include reply ID
       );
 
-      // Optimistic UI: show the message immediately on sender's side
+      // Optimistic UI: use canonical id to prevent duplicate with socket echo
       const decryptedMsg: DecryptedMessage = {
         ...msg,
+        id: msg.id || (msg as any)._id,
         content: newMessage,
-        isMine: true
+        isMine: true,
+        replyTo: replyingTo ? (replyingTo as any) : undefined, // Optimistic reply reference
+        isUnsent: false
       };
+      
       setMessages(prev => {
-        if (prev.some(m => m.id === msg.id)) return prev;
+        if (prev.some(m => m.id === decryptedMsg.id)) return prev;
         return [...prev, decryptedMsg];
       });
       setNewMessage('');
+      setReplyingTo(null); // Clear reply
     } catch (err: any) {
       setError(err.message || 'Failed to send message');
     } finally {
       setSending(false);
     }
+  };
+
+  const handleReply = (msg: DecryptedMessage) => {
+    setReplyingTo(msg);
+    setEditingMessage(null);
+    setContextMenuId(null);
+    // Focus input (optional ref needed)
+  };
+
+  const handleEdit = (msg: DecryptedMessage) => {
+    setEditingMessage(msg);
+    setNewMessage(msg.content);
+    setReplyingTo(null);
+    setContextMenuId(null);
+  };
+
+  const handleDelete = async (msg: DecryptedMessage) => {
+    if (!window.confirm("Delete this message just for you?")) return;
+    try {
+        await deleteMessage(msg.id);
+        // Remove locally
+        setMessages(prev => prev.filter(m => m.id !== msg.id));
+    } catch (e: any) {
+        console.error("Delete failed:", e);
+        alert(`Failed to delete: ${e.message || 'Unknown error'}`);
+    }
+    setContextMenuId(null);
+  };
+
+  const handleUnsend = async (msg: DecryptedMessage) => {
+    if (!window.confirm("Unsend for everyone?")) return;
+    try {
+        await unsendMessage(msg.id);
+        // Update locally
+        setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isUnsent: true, content: '' } : m));
+    } catch (e: any) {
+        console.error("Unsend failed:", e);
+        alert(`Failed to unsend: ${e.message || 'Unknown error'}`);
+    }
+    setContextMenuId(null);
   };
 
   // Emit typing events (debounced — one emit per 1.5s while typing)
@@ -382,234 +508,459 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
   if (!privateKey) {
     return (
-      <div className="text-center py-20 border border-neon-red/30 bg-neon-red/5 text-neon-red font-mono p-8 rounded-sm">
-        <AlertTriangle className="w-12 h-12 mx-auto mb-4" />
-        <h2 className="text-xl font-bold mb-2">DECRYPTION KEY MISSING</h2>
-        <p>Your private identity key is not present on this device. <br/>Existing encrypted messages cannot be read.</p>
-        <p className="mt-4 text-xs opacity-70">To fix: Login from the device where you registered, or create a new identity.</p>
+      <div className="flex flex-col items-center justify-center text-center py-20 px-6">
+        <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mb-4">
+          <AlertTriangle className="w-8 h-8 text-red-400" />
+        </div>
+        <h2 className="text-lg font-bold text-white mb-2">Decryption Key Missing</h2>
+        <p className="text-gray-400 text-sm max-w-sm">Your private identity key is not present on this device. Existing encrypted messages cannot be read.</p>
+        <p className="mt-3 text-xs text-gray-600">To fix: Login from the device where you registered, or create a new identity.</p>
       </div>
     );
   }
 
+  // Helper to get initials for avatar
+  const getInitials = (name: string) => name.slice(0, 2).toUpperCase();
+
+  /**
+   * Safe timestamp formatter.
+   * Covers msg.timestamp AND msg.createdAt (MongoDB field name).
+   * Returns empty string on invalid date so nothing is rendered.
+   */
+  const formatTime = (msg: DecryptedMessage): string => {
+    const raw = (msg as any).createdAt ?? msg.timestamp;
+    if (!raw) return '';
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  /**
+   * Guard: catch raw SHARE_POST JSON that slipped through parsing.
+   * If this returns true, the text must NOT be rendered in the bubble.
+   */
+  const looksLikeShareJson = (text: string): boolean => {
+    const t = text.trim();
+    return t.startsWith('{') && t.includes('SHARE_POST');
+  };
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-3 md:gap-6 h-[calc(100dvh-130px)] md:h-[calc(100dvh-140px)] min-h-[420px]">
-      
-      {/* Sidebar / Conversation List */}
-      <div className={`flex flex-col bg-[#0f0f0f] border border-white/5 rounded-sm h-full ${activeChat ? 'hidden md:flex' : 'flex'}`}>
-        <div className="p-4 border-b border-white/5 flex justify-between items-center shrink-0">
-          <h2 className="font-mono font-bold text-gray-200 flex items-center gap-2">
-            <Lock className="w-4 h-4 text-neon-green" />
-            SECURE_COMMS
-          </h2>
-          <button 
-            onClick={() => setShowNewChatInput(!showNewChatInput)}
-            className="text-xs text-neon-purple hover:text-white transition-colors"
-          >
-            + NEW
-          </button>
+    <div className="flex flex-col md:flex-row h-[calc(100dvh-130px)] md:h-[calc(100dvh-140px)] min-h-[420px] overflow-hidden rounded-2xl border border-white/8 bg-[#111111]">
+
+      {/* ── SIDEBAR ── */}
+      <div className={`flex flex-col bg-[#111111] md:w-[320px] shrink-0 md:border-r border-white/8 h-full ${activeChat ? 'hidden md:flex' : 'flex'}`}>
+
+        {/* Sidebar Header */}
+        <div className="px-4 pt-5 pb-3 shrink-0">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-white">Messages</h2>
+            <button
+              onClick={() => setShowNewChatInput(!showNewChatInput)}
+              className="w-9 h-9 rounded-full bg-white/8 hover:bg-white/12 flex items-center justify-center text-white transition-colors"
+              title="New Message"
+            >
+              <Edit3 className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Search bar */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+            <input
+              placeholder="Search messages"
+              className="w-full bg-white/6 rounded-full py-2 pl-9 pr-4 text-sm text-gray-300 placeholder-gray-500 border border-transparent focus:border-white/15 focus:bg-white/10 outline-none transition-all"
+              readOnly
+            />
+          </div>
         </div>
 
-        {showNewChatInput && (
-          <div className="p-4 border-b border-white/5 bg-white/5 shrink-0">
-             <div className="flex gap-2">
-               <input 
-                 className="flex-1 bg-black border border-white/10 p-2 text-xs text-white font-mono focus:border-neon-purple outline-none w-full"
-                 placeholder="Enter username"
-                 value={newChatUsername}
-                 onChange={e => setNewChatUsername(e.target.value)}
-               />
-               <button onClick={startNewChat} className="bg-neon-purple/20 text-neon-purple px-3 text-xs border border-neon-purple/50">
-                 GO
-               </button>
-             </div>
-             {error && <div className="text-[10px] text-neon-red mt-2">{error}</div>}
-          </div>
-        )}
+        {/* New Chat Input */}
+        <AnimatePresence>
+          {showNewChatInput && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden shrink-0"
+            >
+              <div className="px-4 pb-3">
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 bg-white/6 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-white/25 outline-none transition-all"
+                    placeholder="Enter username..."
+                    value={newChatUsername}
+                    onChange={e => setNewChatUsername(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && startNewChat()}
+                  />
+                  <button
+                    onClick={startNewChat}
+                    className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white text-xs font-semibold rounded-full hover:opacity-90 transition-opacity whitespace-nowrap"
+                  >
+                    Start
+                  </button>
+                </div>
+                {error && <p className="text-xs text-red-400 mt-2 px-2">{error}</p>}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
+        {/* Conversations List */}
         <div className="flex-1 overflow-y-auto">
           {conversations.length === 0 && !showNewChatInput && (
-            <div className="p-8 text-center text-gray-600 text-xs font-mono">
-              NO ACTIVE CHANNELS
+            <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+              <div className="w-14 h-14 rounded-full bg-white/5 flex items-center justify-center mb-3">
+                <ShieldCheck className="w-7 h-7 text-gray-600" />
+              </div>
+              <p className="text-sm text-gray-500">No conversations yet</p>
+              <p className="text-xs text-gray-600 mt-1">Start an encrypted chat</p>
             </div>
           )}
           {conversations.map(chat => (
-            <div 
+            <div
               key={chat.userId}
               onClick={() => setActiveChat(chat)}
-              className={`p-4 border-b border-white/5 cursor-pointer transition-colors flex items-center justify-between group ${activeChat?.userId === chat.userId ? 'bg-white/5 border-l-2 border-l-neon-green' : 'hover:bg-white/5'}`}
+              className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors group ${
+                activeChat?.userId === chat.userId
+                  ? 'bg-white/8'
+                  : 'hover:bg-white/5'
+              }`}
             >
-              <div className="flex items-center gap-3 overflow-hidden">
-                 <div className="relative shrink-0">
-                    <div className="w-8 h-8 bg-black border border-white/10 flex items-center justify-center text-gray-500 rounded-sm">
-                      <User className="w-4 h-4" />
-                    </div>
-                    {chat.unreadCount > 0 && (
-                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-neon-red rounded-full flex items-center justify-center border border-black">
-                         <span className="sr-only">Unread</span>
-                      </div>
-                    )}
-                 </div>
-                 <div className="flex flex-col min-w-0">
-                    <div className="flex items-center gap-2">
-                        <span className={`font-mono text-sm truncate ${activeChat?.userId === chat.userId ? 'text-white' : 'text-gray-400'}`}>
-                        {chat.username}
-                        </span>
-                        <button 
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onViewProfile(chat.username);
-                            }}
-                            className={`p-1 rounded-full transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100 ${activeChat?.userId === chat.userId ? 'text-white/50 hover:text-white hover:bg-white/10' : 'text-gray-600 hover:text-neon-purple hover:bg-white/5'}`}
-                            title="View Public Profile"
-                        >
-                           <ExternalLink className="w-3 h-3" />
-                        </button>
-                    </div>
-                    {chat.unreadCount > 0 && (
-                      <span className="text-[9px] text-neon-green font-mono">{chat.unreadCount} UNREAD</span>
-                    )}
-                 </div>
+              {/* Avatar */}
+              <div className="relative shrink-0">
+                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shadow-lg">
+                  {getInitials(chat.username)}
+                </div>
+                {/* Online indicator */}
+                <div className="absolute bottom-0.5 right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-[#111111]" />
+                {chat.unreadCount > 0 && (
+                  <div className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] bg-red-500 rounded-full flex items-center justify-center px-1 border-2 border-[#111111]">
+                    <span className="text-[10px] text-white font-bold">{chat.unreadCount}</span>
+                  </div>
+                )}
               </div>
-              <ChevronRight className="w-4 h-4 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between">
+                  <span className={`text-sm font-semibold truncate ${activeChat?.userId === chat.userId ? 'text-white' : 'text-gray-200'}`}>
+                    {chat.username}
+                  </span>
+                  <button
+                    onClick={e => { e.stopPropagation(); onViewProfile(chat.username); }}
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-all"
+                    title="View Profile"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                  </button>
+                </div>
+                <p className={`text-xs truncate mt-0.5 ${chat.unreadCount > 0 ? 'text-white font-medium' : 'text-gray-500'}`}>
+                  {chat.unreadCount > 0 ? `${chat.unreadCount} new message${chat.unreadCount > 1 ? 's' : ''}` : 'Tap to open chat'}
+                </p>
+              </div>
             </div>
           ))}
         </div>
+
+        {/* E2EE badge at bottom */}
+        <div className="px-4 py-3 border-t border-white/5 shrink-0">
+          <div className="flex items-center justify-center gap-1.5 text-[10px] text-gray-600">
+            <Lock className="w-3 h-3" />
+            <span>End-to-End Encrypted</span>
+          </div>
+        </div>
       </div>
 
-      {/* Chat Window */}
-      <div className={`md:col-span-1 bg-[#0f0f0f] border border-white/5 rounded-sm flex-col relative h-full ${!activeChat ? 'hidden md:flex' : 'flex'}`}>
-        
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-5 pointer-events-none"></div>
+      {/* ── CHAT WINDOW ── */}
+      <div className={`flex flex-col bg-[#0d0d0d] flex-1 min-w-0 h-full ${!activeChat ? 'hidden md:flex' : 'flex'}`}>
 
         {!activeChat ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-gray-600 font-mono">
-             <ShieldCheck className="w-16 h-16 mb-4 opacity-20" />
-             <p>SELECT_FREQUENCY</p>
-             <p className="text-xs mt-2 opacity-50">End-to-End Encryption Active</p>
+          /* Empty state */
+          <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+            <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500/20 to-purple-600/20 flex items-center justify-center mb-4">
+              <ShieldCheck className="w-10 h-10 text-purple-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-white mb-2">Your messages</h3>
+            <p className="text-sm text-gray-500 max-w-xs">Send private, encrypted messages to a friend.</p>
           </div>
         ) : (
           <>
-            {/* Chat header */}
-            <div className="p-3 md:p-4 border-b border-white/5 flex items-center justify-between bg-black/20 z-10 backdrop-blur-sm shrink-0">
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={() => setActiveChat(null)} 
-                  className="md:hidden text-gray-400 hover:text-white p-1"
-                >
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                <div className="min-w-0">
-                  <button 
-                    onClick={() => onViewProfile(activeChat.username)}
-                    className="block font-mono font-bold text-white tracking-wide hover:text-neon-purple hover:underline underline-offset-4 decoration-neon-purple/50 transition-all text-left truncate max-w-[150px] sm:max-w-[200px]"
-                    title="View Public Profile"
-                  >
-                    @{activeChat.username}
-                  </button>
-                  {isOtherTyping ? (
-                    <span className="flex items-center gap-1 text-[10px] text-neon-green font-mono animate-pulse">
-                      <span className="inline-flex gap-0.5">
-                        <span className="w-1 h-1 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <span className="w-1 h-1 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                        <span className="w-1 h-1 bg-neon-green rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                      </span>
-                      TRANSMITTING...
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 text-[10px] text-neon-green font-mono uppercase">
-                      <Lock className="w-3 h-3" /> Encrypted Connection
-                    </span>
-                  )}
+            {/* Chat Header */}
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-[#0d0d0d] shrink-0 z-10">
+              <button
+                onClick={() => setActiveChat(null)}
+                className="md:hidden p-2 rounded-full hover:bg-white/8 text-gray-400 hover:text-white transition-colors"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+
+              {/* Avatar */}
+              <div className="relative">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shadow">
+                  {getInitials(activeChat.username)}
                 </div>
+                <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-400 rounded-full border-2 border-[#0d0d0d]" />
               </div>
+
+              {/* Name + status */}
+              <div className="flex-1 min-w-0">
+                <button
+                  onClick={() => onViewProfile(activeChat.username)}
+                  className="block text-sm font-semibold text-white hover:text-purple-300 transition-colors truncate text-left"
+                >
+                  {activeChat.username}
+                </button>
+                {isOtherTyping ? (
+                  <span className="flex items-center gap-1 text-[11px] text-green-400">
+                    <span className="inline-flex gap-0.5 items-end">
+                      <span className="w-1 h-1 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1 h-1.5 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1 h-1 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </span>
+                    typing...
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-green-400">Active now</span>
+                )}
+              </div>
+
+              <button
+                onClick={() => onViewProfile(activeChat.username)}
+                className="p-2 rounded-full hover:bg-white/8 text-gray-400 hover:text-gray-200 transition-colors"
+                title="View profile"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </button>
             </div>
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 z-10 scrollbar-thin scrollbar-thumb-gray-800">
+            {/* Messages Area */}
+            <div 
+                className="flex-1 overflow-y-auto px-4 py-4 space-y-1 block"
+            >
               {loading ? (
-                <div className="text-center text-xs text-neon-green font-mono animate-pulse mt-10">
-                  DECRYPTING_STREAM...
+                <div className="flex flex-col items-center justify-center h-full gap-3">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 animate-pulse" />
+                  <p className="text-xs text-gray-500">Loading messages...</p>
                 </div>
               ) : messages.length === 0 ? (
-                <div className="text-center text-xs text-gray-600 font-mono mt-10 border border-dashed border-white/10 p-4 inline-block mx-auto rounded">
-                  CHANNEL OPEN. START TRANSMISSION.
+                <div className="flex flex-col items-center justify-center h-full py-8 text-center">
+                  <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-xl mb-3 shadow-lg shadow-purple-900/30">
+                    {getInitials(activeChat.username)}
+                  </div>
+                  <p className="font-semibold text-white">{activeChat.username}</p>
+                  <p className="text-xs text-gray-500 mt-1">Say hi! Your message is end-to-end encrypted.</p>
                 </div>
               ) : (
-                messages.map((msg, i) => (
-                  <motion.div 
-                    key={msg.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`flex flex-col ${msg.isMine ? 'items-end' : 'items-start'}`}
-                  >
-                    <div className={`max-w-[88%] sm:max-w-[80%] p-3 rounded-sm font-sans text-sm leading-relaxed border break-words overflow-wrap-anywhere ${
-                      msg.isMine 
-                        ? 'bg-neon-purple/10 border-neon-purple/20 text-gray-200' 
-                        : 'bg-white/5 border-white/10 text-gray-300'
-                    }`}>
-                      {translatedMessages[msg.id] || msg.content}
-                      
-                      {translatedMessages[msg.id] && (
-                        <div className="text-[9px] text-neon-green mt-1 font-mono flex items-center gap-1 border-t border-white/5 pt-1">
-                             <Globe className="w-3 h-3" /> Translated
-                        </div>
-                      )}
-                      
-                      <div className="flex justify-end mt-1">
-                        <button 
-                            onClick={() => handleTranslateMessage(msg.id, msg.content)}
-                            className="text-[9px] text-gray-500 hover:text-white flex items-center gap-1"
-                        >
-                            <Globe className="w-3 h-3" /> 
-                            {translatingIds.has(msg.id) ? '...' : (translatedMessages[msg.id] ? 'ORIGINAL' : 'TRANSLATE')}
-                        </button>
-                      </div>
-                      
-                      {/* SHARED POST RENDERER */}
-                      {msg.sharedPostId && (
-                        <div className="mt-3">
-                          {sharedPostsCache[msg.sharedPostId] ? (
-                            <PostCard 
-                              post={sharedPostsCache[msg.sharedPostId]} 
-                              isEmbedded={true}
-                            />
-                          ) : (
-                            <div className="flex items-center gap-2 text-xs text-gray-500 font-mono p-2 border border-dashed border-white/10 bg-black/20">
-                              <Repeat className="w-3 h-3" />
-                              Fetching encrypted signal...
+                <>
+                  {messages.map((msg, i) => {
+                    const prevMsg = messages[i - 1];
+                    const isFirst = !prevMsg || prevMsg.isMine !== msg.isMine;
+                    const nextMsg = messages[i + 1];
+                    const isLast = !nextMsg || nextMsg.isMine !== msg.isMine;
+
+                    return (
+                      <motion.div
+                        key={msg.id}
+                        initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        transition={{ duration: 0.15 }}
+                        className={`flex items-end gap-2 ${msg.isMine ? 'flex-row-reverse' : 'flex-row'} ${isFirst ? 'mt-3' : 'mt-0.5'}`}
+                      >
+                        {/* Avatar (only on last message in group for received) */}
+                        <div className="w-7 h-7 shrink-0">
+                          {!msg.isMine && isLast && (
+                            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[10px] font-bold">
+                              {getInitials(activeChat.username)}
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1 px-1">
-                      <span className="text-[9px] text-gray-600 font-mono">
-                        {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                      </span>
-                      {msg.isMine && (
-                         <span className="text-[9px] font-mono text-gray-600">
-                           {msg.isRead ? 'READ' : 'SENT'}
-                         </span>
-                      )}
-                    </div>
-                  </motion.div>
-                ))
+
+                        {/* Bubble */}
+                        <div className="flex flex-col min-w-0 max-w-[72%] sm:max-w-[60%] relative group">
+                          
+                          {/* Message Actions Menu (Long press / click support) */}
+                          {/* Trigger */}
+                          <button 
+                            onClick={(e) => { 
+                                e.stopPropagation(); 
+                                setContextMenuId(prev => prev === msg.id ? null : msg.id); 
+                            }}
+                            className={`absolute top-0 -right-8 p-1 text-gray-500 hover:text-white opacity-50 hover:opacity-100 transition-opacity ${msg.isMine ? '-left-8 right-auto' : '-right-8'}`}
+                          >
+                             <MoreVertical className="w-4 h-4" />
+                          </button>
+
+                          {/* Menu Popup */}
+                          {/* Menu Popup: Only render if contextMenuId matches AND msg.id is valid */}
+                          {contextMenuId === msg.id && msg.id && (
+                             <div 
+                                onClick={(e) => e.stopPropagation()}
+                                className={`absolute z-50 bg-[#222] border border-white/10 rounded-lg shadow-xl py-1 w-32 ${msg.isMine ? 'right-full mr-2' : 'left-full ml-2'} top-0`}
+                             >
+                                <button onClick={() => handleReply(msg)} className="w-full text-left px-3 py-2 text-xs text-white hover:bg-white/10 flex items-center gap-2">
+                                    <Reply className="w-3 h-3" /> Reply
+                                </button>
+                                {msg.isMine && !msg.isUnsent && (
+                                    <>
+                                        <button onClick={() => handleEdit(msg)} className="w-full text-left px-3 py-2 text-xs text-white hover:bg-white/10 flex items-center gap-2">
+                                            <Edit2 className="w-3 h-3" /> Edit
+                                        </button>
+                                        <button onClick={() => handleUnsend(msg)} className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-white/10 flex items-center gap-2">
+                                            <X className="w-3 h-3" /> Unsend
+                                        </button>
+                                    </>
+                                )}
+                                <button onClick={() => handleDelete(msg)} className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-white/10 flex items-center gap-2">
+                                    <Trash2 className="w-3 h-3" /> Delete
+                                </button>
+                             </div>
+                          )}
+
+                          <div
+                            className={`px-4 py-2.5 text-sm leading-relaxed break-words overflow-hidden ${
+                              msg.isMine
+                                ? 'bg-gradient-to-br from-blue-500 to-purple-600 text-white shadow-lg shadow-purple-900/30'
+                                : 'bg-[#2a2a2a] text-gray-100'
+                            } ${isFirst && isLast ? 'rounded-2xl' : msg.isMine
+                              ? `${isFirst ? 'rounded-t-2xl rounded-bl-2xl' : ''} ${isLast ? 'rounded-b-2xl rounded-bl-2xl' : ''} ${!isFirst && !isLast ? 'rounded-l-2xl rounded-r-md' : ''} rounded-br-md`
+                              : `${isFirst ? 'rounded-t-2xl rounded-br-2xl' : ''} ${isLast ? 'rounded-b-2xl rounded-br-2xl' : ''} ${!isFirst && !isLast ? 'rounded-r-2xl rounded-l-md' : ''} rounded-bl-md`
+                            }`}
+                          >
+                            {/* Reply Quote */}
+                            {msg.replyTo && (
+                                <div className={`mb-2 pl-2 border-l-2 ${msg.isMine ? 'border-white/30' : 'border-purple-500'} text-xs opacity-80`}>
+                                   <div className="font-bold mb-0.5">Replying to message</div>
+                                   <div className="truncate italic">{(msg.replyTo as any).encryptedContent ? '...' : 'Original message'}</div>
+                                </div>
+                            )}
+
+                            {/* Text — hidden if it's raw share JSON that wasn't parsed OR if Unsent */}
+                            {msg.isUnsent ? (
+                                <p className="italic text-gray-400 text-xs py-1">Message unsent</p>
+                            ) : (
+                                msg.content && !looksLikeShareJson(msg.content) && (
+                                  <p className="whitespace-pre-wrap">
+                                    {msg.content}
+                                    {msg.isEdited && <span className="text-[10px] opacity-60 ml-1">(edited)</span>}
+                                  </p>
+                                )
+                            )}
+
+                            {/* Shared Post Preview */}
+                            {msg.sharedPostId && (
+                              <div className="mt-2">
+                                {sharedPostsCache[msg.sharedPostId] === 'ERROR' ? (
+                                  <div className="flex items-center gap-2 text-xs opacity-50 py-1">
+                                    <Repeat className="w-3 h-3 shrink-0" />
+                                    <span>Shared post unavailable</span>
+                                  </div>
+                                ) : sharedPostsCache[msg.sharedPostId] ? (
+                                  <SharedPostPreview 
+                                    post={sharedPostsCache[msg.sharedPostId] as Post} 
+                                    onClick={() => {
+                                      if (onNavigateToPost) {
+                                        onNavigateToPost(msg.sharedPostId!);
+                                      } else {
+                                        window.location.hash = `#/post/${msg.sharedPostId}`; 
+                                      }
+                                    }}
+                                  />
+                                ) : (
+                                  <div className="flex items-center gap-2 text-xs opacity-60 py-1">
+                                    <Repeat className="w-3 h-3 shrink-0 animate-spin" />
+                                    <span>Loading shared post...</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Timestamp + read receipt (only on last in group) */}
+                          {isLast && (
+                            <div className={`flex items-center gap-1 mt-1 px-1 ${msg.isMine ? 'justify-end' : 'justify-start'}`}>
+                              {formatTime(msg) && (
+                                <span className="text-[10px] text-gray-600">
+                                  {formatTime(msg)}
+                                </span>
+                              )}
+                              {msg.isMine && (
+                                <span className="text-[10px] text-gray-600">
+                                  · {msg.isRead ? 'Seen' : 'Sent'}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </>
               )}
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input */}
-            <form onSubmit={handleSendMessage} className="p-3 md:p-4 border-t border-white/5 bg-black/40 z-10 flex gap-2 md:gap-3 shrink-0">
-              <input 
-                className="flex-1 bg-black border border-white/10 p-3 text-sm text-white font-sans focus:border-neon-green outline-none rounded-sm transition-colors"
-                placeholder="Type a secure message..."
-                value={newMessage}
-                onChange={handleInputChange}
-                disabled={sending}
-              />
-              <Button type="submit" isLoading={sending} disabled={!newMessage.trim()} className="!px-4">
-                <Send className="w-4 h-4" />
-              </Button>
+            {/* Error banner */}
+            {error && (
+              <div className="mx-4 mb-2 px-3 py-2 bg-red-900/30 border border-red-700/30 rounded-xl text-xs text-red-400 text-center">
+                {error}
+              </div>
+            )}
+
+            {/* Input Bar */}
+            <form
+              onSubmit={handleSendMessage}
+              className="flex flex-col px-4 py-3 border-t border-white/8 bg-[#0d0d0d] shrink-0" // Changed to column layout for stack
+            >
+              {/* Reply/Edit Preview Area */}
+              {replyingTo && (
+                  <div className="flex items-center justify-between bg-[#1a1a1a] border-l-2 border-purple-500 pl-3 pr-2 py-2 mb-2 rounded text-xs">
+                      <div>
+                          <span className="text-purple-400 font-bold block mb-0.5">Replying to {replyingTo.isMine ? 'Yourself' : activeChat.username}</span>
+                          <span className="text-gray-400 line-clamp-1">{replyingTo.content}</span>
+                      </div>
+                      <button onClick={() => setReplyingTo(null)} className="p-1 hover:bg-white/10 rounded">
+                          <X className="w-4 h-4 text-gray-500" />
+                      </button>
+                  </div>
+              )}
+              {editingMessage && (
+                  <div className="flex items-center justify-between bg-[#1a1a1a] border-l-2 border-blue-500 pl-3 pr-2 py-2 mb-2 rounded text-xs">
+                       <div className="flex items-center gap-2">
+                           <Edit2 className="w-3 h-3 text-blue-400" />
+                           <span className="text-blue-400 font-bold">Editing message</span>
+                       </div>
+                       <button onClick={() => { setEditingMessage(null); setNewMessage(''); }} className="p-1 hover:bg-white/10 rounded">
+                           <X className="w-4 h-4 text-gray-500" />
+                       </button>
+                  </div>
+              )}
+
+              <div className="flex items-center gap-3 w-full"> 
+                <div className="flex-1 flex items-center gap-2 bg-[#222222] rounded-full px-4 py-2.5 border border-white/8 focus-within:border-purple-500/40 transition-colors">
+                  <input
+                  className="flex-1 bg-transparent text-sm text-white placeholder-gray-500 outline-none"
+                  placeholder="Message..."
+                  value={newMessage}
+                  onChange={handleInputChange}
+                  disabled={sending}
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={!newMessage.trim() || sending}
+                className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all ${
+                  newMessage.trim()
+                    ? 'bg-gradient-to-br from-blue-500 to-purple-600 text-white shadow-lg shadow-purple-900/30 hover:opacity-90'
+                    : 'bg-white/8 text-gray-600 cursor-not-allowed'
+                }`}
+              >
+                {sending ? (
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4 ml-0.5" />
+                )}
+              </button>
+              </div>
             </form>
           </>
         )}
