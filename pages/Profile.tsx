@@ -130,6 +130,11 @@ export const Profile: React.FC<ProfileProps> = ({ onHashtagClick }) => {
         <p className="text-xs text-gray-500 font-mono mt-1">Encrypted archives of your activity.</p>
       </div>
 
+
+
+      
+
+
       <div className="space-y-6">
         {posts.length === 0 ? (
           <div className="text-center py-24 text-gray-600 font-mono border border-dashed border-white/10 rounded-sm bg-white/5">

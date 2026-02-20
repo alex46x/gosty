@@ -63,12 +63,15 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [editingMessage, setEditingMessage] = useState<DecryptedMessage | null>(null);
   const [contextMenuId, setContextMenuId] = useState<string | null>(null); // ID of message with open menu
 
-  // Close context menu on any click outside
+  // Close context menu on any click outside — use mousedown to avoid
+  // interfering with input focus (mousedown fires before focus events).
   useEffect(() => {
-    const handleClickOutside = () => setContextMenuId(null);
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, []);
+    const handleClickOutside = () => {
+      if (contextMenuId !== null) setContextMenuId(null);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [contextMenuId]);
 
   // Logic State
   const [newMessage, setNewMessage] = useState('');
@@ -77,6 +80,19 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [error, setError] = useState<string | null>(null);
   const [newChatUsername, setNewChatUsername] = useState('');
   const [showNewChatInput, setShowNewChatInput] = useState(false);
+  const [messageSearchQuery, setMessageSearchQuery] = useState('');
+
+  // Derived: filter conversations by search query.
+  // Source of truth is always `conversations` — never filter an already-filtered list.
+  // Null-safe: c.username may be undefined for socket-received conversations not yet normalized.
+  const filteredConversations = messageSearchQuery.trim()
+    ? conversations.filter(c => {
+        const q = messageSearchQuery.toLowerCase();
+        const nameMatch = (c?.username ?? '').toLowerCase().includes(q);
+        const msgMatch = (c as any)?.lastMessage?.toLowerCase().includes(q) ?? false;
+        return nameMatch || msgMatch;
+      })
+    : conversations;
 
   // Typing indicator
   const [isOtherTyping, setIsOtherTyping] = useState(false);
@@ -489,20 +505,34 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     }, 1500);
   };
 
+  const [startingChat, setStartingChat] = useState(false);
+
   const startNewChat = async () => {
-    if (!newChatUsername.trim()) return;
+    const trimmed = newChatUsername.trim();
+    if (!trimmed) return;
+    
+    console.log('[Messages] startNewChat called with username:', trimmed);
+    setStartingChat(true);
+    setError(null);
+    
     try {
-      const recipient = await getUserPublicKey(newChatUsername);
-      const newContact: ConversationSummary = { userId: recipient.id, username: newChatUsername, unreadCount: 0 };
+      console.log('[Messages] Calling getUserPublicKey for:', trimmed);
+      const recipient = await getUserPublicKey(trimmed);
+      console.log('[Messages] Got recipient:', recipient);
+      
+      const newContact: ConversationSummary = { userId: recipient.id, username: trimmed, unreadCount: 0 };
       
       if (!conversations.find(c => c.userId === recipient.id)) {
-        setConversations([...conversations, newContact]);
+        setConversations(prev => [...prev, newContact]);
       }
       setActiveChat(newContact);
       setShowNewChatInput(false);
       setNewChatUsername('');
     } catch (err: any) {
+      console.error('[Messages] startNewChat failed:', err);
       setError(err.message || "User not found or secure messaging disabled.");
+    } finally {
+      setStartingChat(false);
     }
   };
 
@@ -545,7 +575,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   };
 
   return (
-    <div className="flex flex-col md:flex-row h-[calc(100dvh-130px)] md:h-[calc(100dvh-140px)] min-h-[420px] overflow-hidden rounded-2xl border border-white/8 bg-[#111111]">
+    <div className="flex flex-col md:flex-row h-[calc(100dvh-130px)] md:h-[calc(100dvh-140px)] min-h-[420px] rounded-2xl border border-white/8 bg-[#111111]">
 
       {/* ── SIDEBAR ── */}
       <div className={`flex flex-col bg-[#111111] md:w-[320px] shrink-0 md:border-r border-white/8 h-full ${activeChat ? 'hidden md:flex' : 'flex'}`}>
@@ -567,43 +597,49 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
             <input
+              id="msg-search"
+              name="msg-search"
+              type="text"
+              autoComplete="off"
               placeholder="Search messages"
+              value={messageSearchQuery}
+              onChange={e => setMessageSearchQuery(e.target.value)}
               className="w-full bg-white/6 rounded-full py-2 pl-9 pr-4 text-sm text-gray-300 placeholder-gray-500 border border-transparent focus:border-white/15 focus:bg-white/10 outline-none transition-all"
-              readOnly
             />
           </div>
         </div>
 
-        {/* New Chat Input */}
-        <AnimatePresence>
-          {showNewChatInput && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden shrink-0"
-            >
-              <div className="px-4 pb-3">
-                <div className="flex gap-2">
-                  <input
-                    className="flex-1 bg-white/6 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-white/25 outline-none transition-all"
-                    placeholder="Enter username..."
-                    value={newChatUsername}
-                    onChange={e => setNewChatUsername(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && startNewChat()}
-                  />
-                  <button
-                    onClick={startNewChat}
-                    className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white text-xs font-semibold rounded-full hover:opacity-90 transition-opacity whitespace-nowrap"
-                  >
-                    Start
-                  </button>
-                </div>
-                {error && <p className="text-xs text-red-400 mt-2 px-2">{error}</p>}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* New Chat Input — always visible when showNewChatInput */}
+        {showNewChatInput && (
+          <div className="px-4 pb-3 shrink-0">
+            <div className="flex gap-2">
+              <input
+                id="new-chat-username"
+                name="new-chat-username"
+                type="text"
+                autoComplete="off"
+                className="flex-1 bg-white/6 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-white/25 outline-none transition-all"
+                placeholder="Enter username..."
+                value={newChatUsername}
+                onChange={e => {
+                  setNewChatUsername(e.target.value);
+                  setError(null);
+                }}
+                onKeyDown={e => e.key === 'Enter' && !startingChat && startNewChat()}
+                autoFocus
+                disabled={startingChat}
+              />
+              <button
+                onClick={startNewChat}
+                disabled={startingChat || !newChatUsername.trim()}
+                className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white text-xs font-semibold rounded-full hover:opacity-90 transition-opacity whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {startingChat ? '...' : 'Start'}
+              </button>
+            </div>
+            {error && <p className="text-xs text-red-400 mt-2 px-2">⚠ {error}</p>}
+          </div>
+        )}
 
         {/* Conversations List */}
         <div className="flex-1 overflow-y-auto">
@@ -616,7 +652,12 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
               <p className="text-xs text-gray-600 mt-1">Start an encrypted chat</p>
             </div>
           )}
-          {conversations.map(chat => (
+
+          {filteredConversations.length === 0 && messageSearchQuery.trim() && (
+            <p className="text-xs text-gray-500 text-center py-4 px-4">No conversations match "{messageSearchQuery}"</p>
+          )}
+
+          {filteredConversations.map(chat => (
             <div
               key={chat.userId}
               onClick={() => setActiveChat(chat)}
@@ -626,9 +667,11 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                   : 'hover:bg-white/5'
               }`}
             >
+
+              
               {/* Avatar */}
               <div className="relative shrink-0">
-                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shadow-lg">
+                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-black-500 to-yellow-600 flex items-center justify-center text-white font-bold text-sm shadow-lg">
                   {getInitials(chat.username)}
                 </div>
                 {/* Online indicator */}

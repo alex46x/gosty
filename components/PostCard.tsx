@@ -285,8 +285,9 @@ export const PostCard: React.FC<PostCardProps> = ({
   isEmbedded = false 
 }) => {
   const { user } = useAuth();
-  const [likes, setLikes] = useState(post.likes || 0);
-  const [hasLiked, setHasLiked] = useState(post.hasLiked || false);
+  // Safe access with defaults
+  const [likes, setLikes] = useState(post?.likes || 0);
+  const [hasLiked, setHasLiked] = useState(post?.hasLiked || false);
   const [isLiking, setIsLiking] = useState(false);
   
   const [showComments, setShowComments] = useState(false);
@@ -297,7 +298,7 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [newComment, setNewComment] = useState('');
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [submittingComment, setSubmittingComment] = useState(false);
-  const [commentCount, setCommentCount] = useState(post.commentCount || 0);
+  const [commentCount, setCommentCount] = useState(post?.commentCount || 0);
 
   // Share State
   const [isShareOpen, setIsShareOpen] = useState(false);
@@ -306,12 +307,15 @@ export const PostCard: React.FC<PostCardProps> = ({
   // Edit/Delete State
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditingPost, setIsEditingPost] = useState(false);
-  const [editPostContent, setEditPostContent] = useState(post.content);
+  const [editPostContent, setEditPostContent] = useState(post?.content || "");
   const [isSavingPost, setIsSavingPost] = useState(false);
 
   // Translation State
   const [translatedPostContent, setTranslatedPostContent] = useState<string | null>(null);
   const [isTranslatingPost, setIsTranslatingPost] = useState(false);
+
+  // Guard Clause: If post is missing, don't render anything (or render error state)
+  if (!post) return null;
 
   const handleTranslatePost = async () => {
     if (translatedPostContent) {
@@ -498,14 +502,14 @@ export const PostCard: React.FC<PostCardProps> = ({
                 ${canNavigateToProfile ? 'hover:text-neon-green cursor-pointer hover:underline decoration-neon-green/50 underline-offset-4' : ''}
               `}
             >
-              {isPublicPost ? post.authorUsername : 'GHOST_SIGNAL'}
+              {isPublicPost ? (post.authorUsername || 'Unknown') : 'GHOST_SIGNAL'}
               {isOwner && (
                 <span className="ml-2 text-[9px] bg-white/10 px-1 py-0.5 rounded text-gray-400 font-normal">YOU</span>
               )}
             </span>
             <div className="flex items-center gap-2 text-[10px] text-gray-600 uppercase font-mono">
               <Clock className="w-3 h-3" />
-              {new Date(post.timestamp).toLocaleString()}
+              {post?.timestamp ? new Date(post.timestamp).toLocaleString() : ''}
               {post.isEdited && <span className="text-gray-500">(edited)</span>}
               {post.sharedPostId && (
                 <span className="flex items-center gap-1 text-neon-green">

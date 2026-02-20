@@ -6,6 +6,7 @@ import Notification from '../models/Notification.js';
 import Comment from '../models/Comment.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { rankFeed } from '../services/feedRankingService.js';
+import { getIO } from '../socketManager.js';
 
 const router = express.Router();
 
@@ -67,6 +68,11 @@ router.post('/', protect, async (req, res) => {
                    });
                }
            }
+        }
+
+        const io = getIO();
+        if (io) {
+            io.emit('new_post', privacyFilter(newPost, null));
         }
 
         res.status(201).json(privacyFilter(newPost, req.user._id));
@@ -150,24 +156,29 @@ router.get('/', async (req, res) => {
          let ranked;
          if (viewerId && viewerFollowing.length > 0) {
              // Authenticated user: run personalized ranking
-             ranked = rankFeed(pool, viewerFollowing);
+             ranked = rankFeed(pool, viewerFollowing, viewerId);
          } else if (viewerId) {
-             // Logged in but follows nobody: light engagement-based sort (still better than pure recency)
-             ranked = rankFeed(pool, []);
+             // Logged in but follows nobody: light engagement-based sort
+             ranked = rankFeed(pool, [], viewerId);
          } else {
-             // Guest: simple recency (pool is already sorted newest-first)
+         // Guest: simple recency (pool is already sorted newest-first)
              ranked = pool;
          }
 
+         console.log(`[DEBUG] Ranking complete. Pool size: ${pool.length}, Ranked size: ${ranked.length}`);
+
          const feedPosts = ranked.slice(0, FEED_SIZE);
          const safePosts = feedPosts.map(p => privacyFilter(p, viewerId));
+         
+         console.log(`[DEBUG] Sending ${safePosts.length} posts to client.`);
          res.json(safePosts);
-
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server Error' });
+    } catch (err) {
+        console.error("[DEBUG] Feed Error:", err);
+        res.status(500).json({ message: "Server Error", error: err.message });
     }
 });
+
+
 
 
 // @desc    Get My Posts
@@ -393,6 +404,11 @@ router.post('/share/:id', protect, async (req, res) => {
             });
         }
 
+        const io = getIO();
+        if (io) {
+            io.emit('new_post', privacyFilter(newPost, null));
+        }
+
         res.status(201).json(privacyFilter(newPost, req.user._id));
     } catch (error) {
         console.error(error);
@@ -401,3 +417,5 @@ router.post('/share/:id', protect, async (req, res) => {
 });
 
 export default router;
+
+

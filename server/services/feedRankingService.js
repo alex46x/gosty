@@ -83,13 +83,39 @@ const engagementScore = (likes = 0, comments = 0) => {
 const jitter = () => (Math.random() - 0.5) * WEIGHTS.JITTER_MAX;
 
 /**
+ * Deterministic User-Specific Noise.
+ * Uses a simple hash of (postId + viewerId) to create a consistent "preference" 
+ * for specific posts per user.
+ * 
+ * @param {string} postId
+ * @param {string} viewerId
+ * @returns {number} - range approx -5 to +5
+ */
+const getUserNoise = (postId, viewerId) => {
+  if (!viewerId || !postId) return 0;
+  
+  // Simple hash function
+  const str = `${postId}:${viewerId}`;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0; // Convert to 32bit integer
+  }
+  
+  // Normalize to -0.5 to 0.5 range then scale
+  const normalized = (Math.abs(hash) % 1000) / 1000 - 0.5;
+  return normalized * 10; // Scale to +/- 5 points
+};
+
+/**
  * Calculate a ranking score for a single post given the viewer's follow list.
  *
  * @param {Object} post       - Raw Mongoose post document (or POJO)
  * @param {Set<string>} followingSet  - Set of authorId strings the viewer follows
+ * @param {string} viewerId   - ID of the user viewing the feed
  * @returns {number}
  */
-export const scorePost = (post, followingSet) => {
+export const scorePost = (post, followingSet, viewerId) => {
   const followBoost =
     !post.isAnonymous &&
     post.authorId &&
@@ -99,9 +125,14 @@ export const scorePost = (post, followingSet) => {
 
   const engagement = engagementScore(post.likes, post.commentCount);
   const recency = recencyScore(post.createdAt);
-  const noise = jitter();
+  
+  // Deterministic noise (University of User Preference)
+  const userNoise = getUserNoise(post._id ? post._id.toString() : post.id, viewerId);
+  
+  // Random jitter (The "Spice" of Life - changes on reload)
+  const reloadJitter = jitter();
 
-  return followBoost + engagement + recency + noise;
+  return followBoost + engagement + recency + userNoise + reloadJitter;
 };
 
 /**
@@ -109,15 +140,17 @@ export const scorePost = (post, followingSet) => {
  *
  * @param {Array}  posts         - Array of Mongoose post documents
  * @param {Array}  followingIds  - Array of ObjectId/string IDs that the viewer follows
+ * @param {string} viewerId      - The ID of the current viewer (for deterministic seeding)
  * @returns {Array} Posts sorted by descending score
  */
-export const rankFeed = (posts, followingIds = []) => {
+export const rankFeed = (posts, followingIds = [], viewerId = null) => {
+  console.log(`[DEBUG] rankFeed called with ${posts.length} posts, viewerId: ${viewerId}`);
   const followingSet = new Set(followingIds.map((id) => id.toString()));
 
   return posts
     .map((post) => ({
       post,
-      score: scorePost(post, followingSet),
+      score: scorePost(post, followingSet, viewerId),
     }))
     .sort((a, b) => b.score - a.score)
     .map(({ post }) => post);
