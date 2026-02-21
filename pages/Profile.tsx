@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { User, Activity, Calendar, FileText, Hash, AlertCircle } from 'lucide-react';
+import { User, Activity, Calendar, FileText, Hash, AlertCircle, Users } from 'lucide-react';
 // import { getUserProfile, getUserPosts } from '../services/mockBackend';
 
 import { Post, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { PostCard } from '../components/PostCard';
-import { Button } from '../components/UI';
 import { getUserPosts, getUserProfile } from '@/services/mockBackend';
 
 interface ProfileProps {
@@ -118,6 +117,26 @@ export const Profile: React.FC<ProfileProps> = ({ onHashtagClick }) => {
               </div>
               <div className="text-xl text-white font-mono font-bold">
                 {profile.postCount}
+              </div>
+            </div>
+
+            <div className="p-4 bg-white/5 border border-white/5 rounded-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-500 mb-1 font-mono uppercase">
+                <Users className="w-3 h-3" />
+                Followers
+              </div>
+              <div className="text-xl text-white font-mono font-bold">
+                {profile.followersCount ?? 0}
+              </div>
+            </div>
+
+            <div className="p-4 bg-white/5 border border-white/5 rounded-sm">
+              <div className="flex items-center gap-2 text-xs text-gray-500 mb-1 font-mono uppercase">
+                <Users className="w-3 h-3" />
+                Following
+              </div>
+              <div className="text-xl text-white font-mono font-bold">
+                {profile.followingCount ?? 0}
               </div>
             </div>
           </div>
