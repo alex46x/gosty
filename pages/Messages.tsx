@@ -116,8 +116,10 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
   // Typing indicator
   const [isOtherTyping, setIsOtherTyping] = useState(false);
+  const [groupTypingUsers, setGroupTypingUsers] = useState<string[]>([]);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stopTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const groupTypingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<DecryptedMessage[]>([]);
@@ -134,11 +136,17 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       if (stopTypingTimerRef.current) clearTimeout(stopTypingTimerRef.current);
+      groupTypingTimersRef.current.forEach((timer) => clearTimeout(timer));
+      groupTypingTimersRef.current.clear();
     };
   }, []);
 
   useEffect(() => {
     setContextMenuId(null);
+    setIsOtherTyping(false);
+    setGroupTypingUsers([]);
+    groupTypingTimersRef.current.forEach((timer) => clearTimeout(timer));
+    groupTypingTimersRef.current.clear();
   }, [activeChat?.userId]);
 
   useEffect(() => {
@@ -387,6 +395,40 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       }
     };
 
+    const handleGroupTyping = ({ groupId, senderId, senderUsername }: { groupId: string; senderId: string; senderUsername?: string }) => {
+      const active = activeChatRef.current;
+      if (!active || !isGroupConversation(active)) return;
+      const activeGroupId = String(active.groupId ?? active.userId);
+      if (activeGroupId !== String(groupId)) return;
+      if (String(senderId) === String(user.id)) return;
+
+      const username = (senderUsername || 'Someone').trim();
+      setGroupTypingUsers(prev => (prev.includes(username) ? prev : [...prev, username]));
+
+      const existingTimer = groupTypingTimersRef.current.get(String(senderId));
+      if (existingTimer) clearTimeout(existingTimer);
+      const timeout = setTimeout(() => {
+        setGroupTypingUsers(prev => prev.filter(name => name !== username));
+        groupTypingTimersRef.current.delete(String(senderId));
+      }, 2500);
+      groupTypingTimersRef.current.set(String(senderId), timeout);
+    };
+
+    const handleGroupStopTyping = ({ groupId, senderId, senderUsername }: { groupId: string; senderId: string; senderUsername?: string }) => {
+      const active = activeChatRef.current;
+      if (!active || !isGroupConversation(active)) return;
+      const activeGroupId = String(active.groupId ?? active.userId);
+      if (activeGroupId !== String(groupId)) return;
+
+      const username = (senderUsername || '').trim();
+      if (username) {
+        setGroupTypingUsers(prev => prev.filter(name => name !== username));
+      }
+      const existingTimer = groupTypingTimersRef.current.get(String(senderId));
+      if (existingTimer) clearTimeout(existingTimer);
+      groupTypingTimersRef.current.delete(String(senderId));
+    };
+
     socket.on('receive_message', handleReceiveMessage);
     socket.on('unread_count_update', handleUnreadUpdate);
     socket.on('typing', handleTyping);
@@ -397,6 +439,8 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     socket.on('group:message:update', handleGroupMessageUpdate);
     socket.on('group:create', handleGroupCreated);
     socket.on('group:removed', handleGroupRemoved);
+    socket.on('group:typing', handleGroupTyping);
+    socket.on('group:stop_typing', handleGroupStopTyping);
 
     return () => {
       socket.off('receive_message', handleReceiveMessage);
@@ -409,6 +453,8 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       socket.off('group:message:update', handleGroupMessageUpdate);
       socket.off('group:create', handleGroupCreated);
       socket.off('group:removed', handleGroupRemoved);
+      socket.off('group:typing', handleGroupTyping);
+      socket.off('group:stop_typing', handleGroupStopTyping);
     };
   }, [socket, user, privateKey]);
 
@@ -611,8 +657,12 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     setSending(true);
     setError(null);
 
-    if (socket && activeChat && !isGroupConversation(activeChat)) {
-      socket.emit('stop_typing', { recipientId: activeChat.userId });
+    if (socket && activeChat) {
+      if (isGroupConversation(activeChat)) {
+        socket.emit('group:stop_typing', { groupId: String(activeChat.groupId ?? activeChat.userId) });
+      } else {
+        socket.emit('stop_typing', { recipientId: activeChat.userId });
+      }
     }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
@@ -769,21 +819,31 @@ const handleReply = (msg: DecryptedMessage) => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
 
-    if (!socket || !activeChat || isGroupConversation(activeChat)) return;
+    if (!socket || !activeChat) return;
 
-    // Emit typing
+    if (isGroupConversation(activeChat)) {
+      const groupId = String(activeChat.groupId ?? activeChat.userId);
+      if (!typingTimeoutRef.current) {
+        socket.emit('group:typing', { groupId });
+      }
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        socket.emit('group:stop_typing', { groupId });
+        typingTimeoutRef.current = null;
+      }, 1200);
+      return;
+    }
+
     if (!typingTimeoutRef.current) {
       socket.emit('typing', { recipientId: activeChat.userId });
     }
-    // Reset debounce
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       socket.emit('stop_typing', { recipientId: activeChat.userId });
       typingTimeoutRef.current = null;
     }, 1500);
   };
-
-  if (!privateKey) {
+if (!privateKey) {
     return (
       <div className="flex flex-col items-center justify-center text-center py-20 px-6">
         <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mb-4">
@@ -820,6 +880,13 @@ const handleReply = (msg: DecryptedMessage) => {
     const t = text.trim();
     return t.startsWith('{') && t.includes('SHARE_POST');
   };
+  const groupTypingLabel = groupTypingUsers.length === 0
+    ? ''
+    : groupTypingUsers.length === 1
+      ? `${groupTypingUsers[0]} typing...`
+      : groupTypingUsers.length === 2
+        ? `${groupTypingUsers[0]}, ${groupTypingUsers[1]} typing...`
+        : `${groupTypingUsers[0]}, ${groupTypingUsers[1]} +${groupTypingUsers.length - 2} typing...`;
 
   return (
     <div className="flex flex-col md:flex-row w-full h-[calc(100dvh-110px)] md:h-[calc(100dvh-140px)] min-h-[520px] md:min-h-[420px] rounded-none md:rounded-2xl border border-white/8 bg-[#111111] overflow-hidden">
@@ -1020,7 +1087,22 @@ const handleReply = (msg: DecryptedMessage) => {
                     {activeChat.username}
                   </button>
                 )}
-                {!isGroupConversation(activeChat) && isOtherTyping ? (
+                {isGroupConversation(activeChat) ? (
+                  groupTypingUsers.length > 0 ? (
+                    <span className="flex items-center gap-1 text-[11px] text-green-400">
+                      <span className="inline-flex gap-0.5 items-end">
+                        <span className="w-1 h-1 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1 h-1.5 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1 h-1 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </span>
+                      {groupTypingLabel}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-green-400">
+                      {`${activeChat.memberCount ?? 0} members${activeChat.isAdmin ? ' • Admin' : ''}`}
+                    </span>
+                  )
+                ) : isOtherTyping ? (
                   <span className="flex items-center gap-1 text-[11px] text-green-400">
                     <span className="inline-flex gap-0.5 items-end">
                       <span className="w-1 h-1 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -1030,11 +1112,7 @@ const handleReply = (msg: DecryptedMessage) => {
                     typing...
                   </span>
                 ) : (
-                  <span className="text-[11px] text-green-400">
-                    {isGroupConversation(activeChat)
-                      ? `${activeChat.memberCount ?? 0} members${activeChat.isAdmin ? ' â€¢ Admin' : ''}`
-                      : 'Active now'}
-                  </span>
+                  <span className="text-[11px] text-green-400">Active now</span>
                 )}
               </div>
 
@@ -1312,5 +1390,7 @@ const handleReply = (msg: DecryptedMessage) => {
     </div>
   );
 };
+
+
 
 

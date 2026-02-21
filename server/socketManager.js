@@ -129,6 +129,29 @@ export const initSocket = (httpServer) => {
             }
         });
 
+        // Group typing indicator (Messenger-style)
+        socket.on('group:typing', ({ groupId }) => {
+            if (!groupId) return;
+            const room = roomForGroup(groupId);
+            if (!socket.rooms.has(room)) return;
+            socket.to(room).emit('group:typing', {
+                groupId: groupId.toString(),
+                senderId: userId,
+                senderUsername: socket.user.username
+            });
+        });
+
+        socket.on('group:stop_typing', ({ groupId }) => {
+            if (!groupId) return;
+            const room = roomForGroup(groupId);
+            if (!socket.rooms.has(room)) return;
+            socket.to(room).emit('group:stop_typing', {
+                groupId: groupId.toString(),
+                senderId: userId,
+                senderUsername: socket.user.username
+            });
+        });
+
         // ── Disconnect ───────────────────────────────────────────────────────
         socket.on('disconnect', () => {
             userSocketMap.delete(userId);
