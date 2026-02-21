@@ -253,7 +253,7 @@ router.get('/:groupId/messages', protect, async (req, res) => {
     })
       .sort({ createdAt: 1 })
       .populate('senderId', 'username')
-      .populate('replyTo', 'senderId content messageType');
+      .populate('replyTo', 'senderId content messageType isUnsent');
     res.json(messages);
   } catch (error) {
     if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });

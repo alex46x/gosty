@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Lock, Send, AlertTriangle, ShieldCheck, ExternalLink, ArrowLeft, Repeat, Search, Reply, MoreVertical, Trash2, X, Edit2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -31,7 +31,7 @@ interface MessagesProps {
   onNavigateToPost?: (postId: string) => void; // New prop for navigation
 }
 
-// ─── Compact Shared Post Preview ───
+// â”€â”€â”€ Compact Shared Post Preview â”€â”€â”€
 const SharedPostPreview: React.FC<{ post: Post; onClick: () => void }> = ({ post, onClick }) => {
   return (
     <div 
@@ -79,7 +79,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [editingMessage, setEditingMessage] = useState<DecryptedMessage | null>(null);
   const [contextMenuId, setContextMenuId] = useState<string | null>(null); // ID of message with open menu
 
-  // Close context menu on any click outside — use mousedown to avoid
+  // Close context menu on any click outside â€” use mousedown to avoid
   // interfering with input focus (mousedown fires before focus events).
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -103,7 +103,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [creatingGroup, setCreatingGroup] = useState(false);
 
   // Derived: filter conversations by search query.
-  // Source of truth is always `conversations` — never filter an already-filtered list.
+  // Source of truth is always `conversations` â€” never filter an already-filtered list.
   // Null-safe: c.username may be undefined for socket-received conversations not yet normalized.
   const filteredConversations = messageSearchQuery.trim()
     ? conversations.filter(c => {
@@ -131,6 +131,68 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   conversationsRef.current = conversations;
   const isGroupConversation = (chat?: ConversationSummary | null) =>
     Boolean(chat?.isGroup || chat?.conversationType === 'group');
+  const normalizeId = (value: any): string => {
+    if (!value) return '';
+    if (typeof value === 'object') return String(value._id ?? value.id ?? '');
+    return String(value);
+  };
+
+  const resolveReplyFromLoaded = (replyRef: any, fallbackOtherName: string) => {
+    const replyToId = normalizeId(replyRef);
+    if (!replyToId) return {};
+    const target = messagesRef.current.find(m => String(m.id) === replyToId);
+    if (!target) return { replyToId };
+    return {
+      replyToId,
+      replyToContent: target.isUnsent ? 'Message unsent' : (target.content || 'Original message'),
+      replyToSender: target.isMine ? 'You' : (target.senderUsername || fallbackOtherName || 'User')
+    };
+  };
+
+  const hydrateReplyPreviews = (list: DecryptedMessage[], fallbackOtherName: string): DecryptedMessage[] => {
+    const byId = new Map(list.map(item => [String(item.id), item]));
+
+    return list.map((item) => {
+      const replyRaw: any = (item as any).replyTo;
+      const replyToId = item.replyToId || normalizeId(replyRaw);
+      if (!replyToId) return item;
+
+      let replyToContent = item.replyToContent;
+      let replyToSender = item.replyToSender;
+
+      if (!replyToContent && replyRaw && typeof replyRaw === 'object') {
+        if (replyRaw.isUnsent) {
+          replyToContent = 'Message unsent';
+        } else if (replyRaw.content) {
+          replyToContent = replyRaw.content;
+        }
+      }
+
+      const target = byId.get(String(replyToId));
+      if (!replyToContent && target) {
+        replyToContent = target.isUnsent ? 'Message unsent' : (target.content || 'Original message');
+      }
+
+      if (!replyToSender) {
+        const replySenderRaw: any = replyRaw && typeof replyRaw === 'object' ? replyRaw.senderId : null;
+        const replySenderId = normalizeId(replySenderRaw);
+        if (replySenderId) {
+          replyToSender = replySenderId === String(user?.id)
+            ? 'You'
+            : (replySenderRaw?.username || fallbackOtherName || 'User');
+        } else if (target) {
+          replyToSender = target.isMine ? 'You' : (target.senderUsername || fallbackOtherName || 'User');
+        }
+      }
+
+      return {
+        ...item,
+        replyToId: String(replyToId),
+        replyToContent: replyToContent || 'Original message',
+        replyToSender: replyToSender || fallbackOtherName || 'User'
+      };
+    });
+  };
 
   useEffect(() => {
     return () => {
@@ -163,7 +225,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sharedPostsCache]);
 
-  // ── Real-Time Socket Listeners ────────────────────────────────────────────
+  // â”€â”€ Real-Time Socket Listeners â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!socket || !user || !privateKey) return;
 
@@ -194,10 +256,19 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
       // Normalize _id -> id to prevent optimistic + socket duplicates
       const normalizedId = String((msg as any)._id ?? msg.id ?? `temp-${Date.now()}-${Math.random()}`); // Fallback ID
-      const decrypted: DecryptedMessage = { ...msg, id: normalizedId, content, isMine, sharedPostId };
+      const active = activeChatRef.current;
+      const replyMeta = resolveReplyFromLoaded((msg as any).replyTo, active?.username || 'User');
+      const decrypted: DecryptedMessage = {
+        ...msg,
+        id: normalizedId,
+        content,
+        isMine,
+        sharedPostId,
+        ...(replyMeta as any)
+      };
 
       // Only append if this message belongs to the active conversation
-      const chat = activeChatRef.current;
+      const chat = active;
       if (chat && (msg.senderId === chat.userId || msg.receiverId === chat.userId)) {
         setMessages(prev => {
           if (prev.some(m => m.id === normalizedId)) return prev;
@@ -207,16 +278,16 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
       // Update conversation preview and keep latest chat at the top.
       setConversations(prev => {
-        const active = activeChatRef.current;
+        const activeChat = activeChatRef.current;
         const existing = prev.find(c => c.userId === partnerId);
         const usernameFromSocket = isMine
-          ? active?.username
+          ? activeChat?.username
           : ((msg as any).senderUsername || existing?.username);
 
         const updatedConversation: ConversationSummary = {
           userId: partnerId,
           username: usernameFromSocket || existing?.username || 'Unknown',
-          unreadCount: !isMine && active?.userId !== partnerId
+          unreadCount: !isMine && activeChat?.userId !== partnerId
             ? (existing?.unreadCount ?? 0) + 1
             : 0
         };
@@ -331,7 +402,8 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         groupId,
         content: rawMsg?.isUnsent ? '' : (rawMsg?.content ?? ''),
         isMine: senderId === String(user.id),
-        senderUsername
+        senderUsername,
+        ...(resolveReplyFromLoaded((rawMsg as any).replyTo, activeChatRef.current?.username || 'User') as any)
       };
 
       const active = activeChatRef.current;
@@ -554,6 +626,18 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
             const senderUsername = typeof senderRaw === 'object' && senderRaw !== null
               ? senderRaw.username
               : msg.senderUsername;
+            const replyRaw = msg.replyTo;
+            const replySenderRaw = replyRaw && typeof replyRaw === 'object' ? replyRaw.senderId : null;
+            const replySenderId = normalizeId(replySenderRaw);
+            const replyToId = normalizeId(replyRaw);
+            const replyToContent = replyToId
+              ? (replyRaw?.isUnsent ? 'Message unsent' : (replyRaw?.content || undefined))
+              : undefined;
+            const replyToSender = replyToId
+              ? (replySenderId === String(user.id)
+                  ? 'You'
+                  : (replySenderRaw?.username || activeChat.username))
+              : undefined;
 
             return {
               ...msg,
@@ -562,10 +646,13 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
               senderId,
               senderUsername,
               content: msg.isUnsent ? '' : (msg.content ?? ''),
-              isMine: senderId === String(user.id)
+              isMine: senderId === String(user.id),
+              replyToId,
+              replyToContent,
+              replyToSender
             } as DecryptedMessage;
           });
-          setMessages(normalized);
+          setMessages(hydrateReplyPreviews(normalized, activeChat.username));
           if ((activeChat.unreadCount ?? 0) > 0) {
             await markGroupRead(groupId);
             loadConvos();
@@ -582,6 +669,9 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           
           let content = "[[Decryption Error]]";
           let sharedPostId = undefined;
+          let replyToId: string | undefined;
+          let replyToContent: string | undefined;
+          let replyToSender: string | undefined;
 
           try {
             content = await decryptMessage(msg.encryptedContent, msg.iv, encryptedKey, privateKey);
@@ -604,6 +694,34 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
             console.error("Failed to decrypt msg", msg.id);
           }
 
+          const replyRaw: any = (msg as any).replyTo;
+          replyToId = normalizeId(replyRaw);
+          if (replyToId && replyRaw && typeof replyRaw === 'object') {
+            const replySenderRaw = replyRaw.senderId;
+            const replySenderId = normalizeId(replySenderRaw);
+            replyToSender = replySenderId === String(user.id) ? 'You' : activeChat.username;
+
+            if (replyRaw.isUnsent) {
+              replyToContent = 'Message unsent';
+            } else if (replyRaw.encryptedContent && replyRaw.iv) {
+              const replyKey = replySenderId === String(user.id)
+                ? replyRaw.encryptedKeyForSender
+                : replyRaw.encryptedKeyForReceiver;
+              if (replyKey) {
+                try {
+                  replyToContent = await decryptMessage(
+                    replyRaw.encryptedContent,
+                    replyRaw.iv,
+                    replyKey,
+                    privateKey
+                  );
+                } catch {
+                  // Ignore and allow fallback from loaded messages.
+                }
+              }
+            }
+          }
+
           // Normalize _id -> id (Critical check for historical messages)
           const normalizedId = String((msg as any)._id ?? msg.id);
 
@@ -612,12 +730,15 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
             id: normalizedId, // Ensure ID is present
             content: msg.isUnsent ? '' : content, // Don't show content if unsent
             isMine,
-            sharedPostId
+            sharedPostId,
+            replyToId,
+            replyToContent,
+            replyToSender
           } as DecryptedMessage;
         });
 
         const decrypted = await Promise.all(decryptedPromises);
-        setMessages(decrypted);
+        setMessages(hydrateReplyPreviews(decrypted, activeChat.username));
 
         // Fetch shared post data (with error state tracking)
         const postIdsToFetch = decrypted
@@ -715,6 +836,13 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           content: (msg as any).isUnsent ? '' : ((msg as any).content ?? newMessage),
           isMine: senderId === String(user.id),
           replyTo: replyingTo ? (replyingTo as any) : undefined,
+          replyToId: replyingTo?.id,
+          replyToContent: replyingTo
+            ? (replyingTo.isUnsent ? 'Message unsent' : (replyingTo.content || 'Original message'))
+            : undefined,
+          replyToSender: replyingTo
+            ? (replyingTo.isMine ? 'You' : (replyingTo.senderUsername || activeChat.username))
+            : undefined,
           isUnsent: Boolean((msg as any).isUnsent)
         };
 
@@ -752,6 +880,13 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         content: newMessage,
         isMine: true,
         replyTo: replyingTo ? (replyingTo as any) : undefined,
+        replyToId: replyingTo?.id,
+        replyToContent: replyingTo
+          ? (replyingTo.isUnsent ? 'Message unsent' : (replyingTo.content || 'Original message'))
+          : undefined,
+        replyToSender: replyingTo
+          ? (replyingTo.isMine ? 'You' : (replyingTo.senderUsername || activeChat.username))
+          : undefined,
         isUnsent: false
       };
 
@@ -815,7 +950,7 @@ const handleReply = (msg: DecryptedMessage) => {
     setContextMenuId(null);
   };
 
-  // Emit typing events (debounced — one emit per 1.5s while typing)
+  // Emit typing events (debounced â€” one emit per 1.5s while typing)
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
 
@@ -891,7 +1026,7 @@ if (!privateKey) {
   return (
     <div className="flex flex-col md:flex-row w-full h-[calc(100dvh-110px)] md:h-[calc(100dvh-140px)] min-h-[520px] md:min-h-[420px] rounded-none md:rounded-2xl border border-white/8 bg-[#111111] overflow-hidden">
 
-      {/* ── SIDEBAR ── */}
+      {/* â”€â”€ SIDEBAR â”€â”€ */}
       <div className={`flex flex-col bg-[#111111] w-full md:w-[320px] shrink-0 md:border-r border-white/8 h-full ${activeChat ? 'hidden md:flex' : 'flex'}`}>
 
         {/* Sidebar Header */}
@@ -1040,7 +1175,7 @@ if (!privateKey) {
         </div>
       </div>
 
-      {/* ── CHAT WINDOW ── */}
+      {/* â”€â”€ CHAT WINDOW â”€â”€ */}
       <div className={`flex flex-col bg-[#0d0d0d] flex-1 min-w-0 h-full ${!activeChat ? 'hidden md:flex' : 'flex'}`}>
 
         {!activeChat ? (
@@ -1099,7 +1234,7 @@ if (!privateKey) {
                     </span>
                   ) : (
                     <span className="text-[11px] text-green-400">
-                      {`${activeChat.memberCount ?? 0} members${activeChat.isAdmin ? ' � Admin' : ''}`}
+                      {`${activeChat.memberCount ?? 0} members${activeChat.isAdmin ? ' • Admin' : ''}`}
                     </span>
                   )
                 ) : isOtherTyping ? (
@@ -1212,7 +1347,7 @@ if (!privateKey) {
                           {!isSystemMessage && contextMenuId === msg.id && msg.id && (
                              <div 
                                 onClick={(e) => e.stopPropagation()}
-                                className={`absolute z-50 bg-[#222] border border-white/10 rounded-lg shadow-xl py-1 w-36 max-w-[calc(100vw-3rem)] ${msg.isMine ? '-left-2' : '-right-2'} top-8`}
+                                className={`absolute z-50 bg-[#222] border border-white/10 rounded-lg shadow-xl py-1 w-36 max-w-[calc(100vw-3rem)] ${msg.isMine ? '-left-2' : '-right-2'} top-0 -translate-y-[calc(100%+0.5rem)]`}
                              >
                                 <button onClick={() => handleReply(msg)} className="w-full text-left px-3 py-2 text-xs text-white hover:bg-white/10 flex items-center gap-2">
                                     <Reply className="w-3 h-3" /> Reply
@@ -1249,14 +1384,18 @@ if (!privateKey) {
                               </p>
                             )}
                             {/* Reply Quote */}
-                            {msg.replyTo && (
+                            {(msg.replyToId || msg.replyTo) && (
                                 <div className={`mb-2 pl-2 border-l-2 ${msg.isMine ? 'border-white/30' : 'border-purple-500'} text-xs opacity-80`}>
-                                   <div className="font-bold mb-0.5">Replying to message</div>
-                                   <div className="truncate italic">{(msg.replyTo as any).encryptedContent ? '...' : 'Original message'}</div>
+                                   <div className="font-bold mb-0.5">
+                                     Replying to {msg.replyToSender || 'message'}
+                                   </div>
+                                   <div className="truncate italic">
+                                     {msg.replyToContent || 'Original message'}
+                                   </div>
                                 </div>
                             )}
 
-                            {/* Text — hidden if it's raw share JSON that wasn't parsed OR if Unsent */}
+                            {/* Text â€” hidden if it's raw share JSON that wasn't parsed OR if Unsent */}
                             {msg.isUnsent ? (
                                 <p className="italic text-gray-400 text-xs py-1">Message unsent</p>
                             ) : (
@@ -1338,7 +1477,7 @@ if (!privateKey) {
                   <div className="flex items-center justify-between bg-[#1a1a1a] border-l-2 border-purple-500 pl-3 pr-2 py-2 mb-2 rounded text-xs">
                       <div>
                           <span className="text-purple-400 font-bold block mb-0.5">Replying to {replyingTo.isMine ? 'Yourself' : activeChat.username}</span>
-                          <span className="text-gray-400 line-clamp-1">{replyingTo.content}</span>
+                          <span className="text-gray-400 line-clamp-1">{replyingTo.isUnsent ? 'Message unsent' : replyingTo.content}</span>
                       </div>
                       <button type="button" onClick={() => setReplyingTo(null)} className="p-1 hover:bg-white/10 rounded">
                           <X className="w-4 h-4 text-gray-500" />
@@ -1390,6 +1529,7 @@ if (!privateKey) {
     </div>
   );
 };
+
 
 
 

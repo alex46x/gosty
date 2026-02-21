@@ -75,7 +75,7 @@ router.get('/:otherUserId', protect, async (req, res) => {
             // Filter out messages deleted by this user
             deletedFor: { $ne: req.user._id }
         }).sort({ createdAt: 1 })
-          .populate('replyTo', 'senderId encryptedContent iv'); // Populate basic info for reply preview if needed
+          .populate('replyTo', 'senderId encryptedContent iv encryptedKeyForReceiver encryptedKeyForSender isUnsent');
 
 
         res.json(messages);

@@ -28,12 +28,32 @@ const AppContent = () => {
 
   // State for selected hashtag
   const [selectedHashtag, setSelectedHashtag] = useState<string | null>(null);
+  const [feedReloadKey, setFeedReloadKey] = useState(0);
 
   // Wrapper for navigation updates
   const handleNavigate = (newView: ViewState) => {
     startTransition(() => {
         setView(newView);
     });
+  };
+
+  const handleHomeClick = () => {
+    // Clear deep-link query so app always returns to the canonical feed URL.
+    const cleanUrl = `${window.location.protocol}//${window.location.host}${window.location.pathname}`;
+    if (window.location.search) {
+      window.history.pushState({ path: cleanUrl }, '', cleanUrl);
+    }
+
+    startTransition(() => {
+      setSelectedUsername('');
+      setChatTarget(null);
+      setSelectedPostId(null);
+      setSelectedHashtag(null);
+      setView(ViewState.FEED);
+      setFeedReloadKey((prev) => prev + 1);
+    });
+
+    window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
   };
 
   // Check for deep link (query param) on mount or auth change
@@ -132,12 +152,12 @@ const AppContent = () => {
         break;
       case ViewState.FEED:
       default:
-        content = <Feed onUserClick={handleSelectUser} onHashtagClick={handleHashtagClick} />;
+        content = <Feed key={`feed-${feedReloadKey}`} onUserClick={handleSelectUser} onHashtagClick={handleHashtagClick} />;
         break;
     }
 
     return (
-      <Layout currentView={view} onNavigate={handleNavigate} isPending={isPending}>
+      <Layout currentView={view} onNavigate={handleNavigate} onHomeClick={handleHomeClick} isPending={isPending}>
         {content}
       </Layout>
     );

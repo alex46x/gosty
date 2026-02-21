@@ -8,10 +8,11 @@ interface LayoutProps {
   children: React.ReactNode;
   currentView?: ViewState;
   onNavigate?: (view: ViewState) => void;
+  onHomeClick?: () => void;
   isPending?: boolean; // New Prop
 }
 
-export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigate, isPending }) => {
+export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigate, onHomeClick, isPending }) => {
   const { isAuthenticated, logoutUser, user } = useAuth();
   const [unreadMsgCount, setUnreadMsgCount] = useState(0);
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
@@ -52,7 +53,13 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentView, onNavigat
         <div className="w-full max-w-3xl mx-auto px-3 md:px-4 h-16 flex items-center justify-between">
           <div 
             className="flex items-center gap-2 text-neon-green cursor-pointer hover:opacity-80 transition-opacity"
-            onClick={() => onNavigate?.(ViewState.FEED)}
+            onClick={() => {
+              if (onHomeClick) {
+                onHomeClick();
+                return;
+              }
+              onNavigate?.(ViewState.FEED);
+            }}
           >
             <Ghost className="w-5 h-5 md:w-6 md:h-6" />
             <span className="font-mono font-bold tracking-tighter text-base md:text-lg truncate">GHOST_PROTOCOL</span>
