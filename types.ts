@@ -51,20 +51,27 @@ export interface Post {
 export interface Message {
   id: string;
   senderId: string;
-  receiverId: string;
+  receiverId?: string;
+  conversationType?: 'direct' | 'group';
+  messageType?: 'user' | 'system';
+  groupId?: string;
   timestamp: string;
   isRead: boolean; // New field for read status
+  content?: string; // Group message plaintext content
+  systemAction?: 'user_added' | 'user_removed' | 'user_left' | 'admin_promoted' | 'admin_demoted' | 'group_renamed';
+  systemMeta?: any;
+  senderUsername?: string;
   
   // The actual content encrypted with AES-GCM
-  encryptedContent: string; // Base64
-  iv: string; // Base64 initialization vector
+  encryptedContent?: string; // Base64
+  iv?: string; // Base64 initialization vector
   
   // The AES key, encrypted with the Receiver's Public Key (RSA)
-  encryptedKeyForReceiver: string; // Base64
+  encryptedKeyForReceiver?: string; // Base64
   
   // The AES key, encrypted with the Sender's Public Key (RSA)
   // Required so the sender can read their own message history on other devices (if key is shared)
-  encryptedKeyForSender: string; // Base64
+  encryptedKeyForSender?: string; // Base64
   
   // New Fields
   replyTo?: Message;
@@ -92,6 +99,28 @@ export interface ConversationSummary {
   userId: string;
   username: string;
   unreadCount: number;
+  conversationType?: 'direct' | 'group';
+  isGroup?: boolean;
+  conversationId?: string;
+  groupId?: string;
+  name?: string;
+  avatarUrl?: string | null;
+  memberCount?: number;
+  isAdmin?: boolean;
+  lastMessageAt?: string | null;
+}
+
+export interface GroupMemberSummary {
+  userId: { id?: string; _id?: string; username: string } | string;
+  role: 'member' | 'admin';
+  status: 'active' | 'left' | 'removed';
+  joinedAt: string;
+}
+
+export interface GroupConversation extends ConversationSummary {
+  isGroup: true;
+  groupId: string;
+  members?: GroupMemberSummary[];
 }
 
 export enum NotificationType {

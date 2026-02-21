@@ -18,6 +18,7 @@ router.post('/', protect, async (req, res) => {
         }
 
         const message = await Message.create({
+            conversationType: 'direct',
             senderId: req.user._id,
             receiverId,
             replyTo, // Optional linked message ID
@@ -28,7 +29,7 @@ router.post('/', protect, async (req, res) => {
             isRead: false
         });
 
-        // ── Real-Time Delivery ─────────────────────────────────────────────
+        // -- Real-Time Delivery ---------------------------------------------
         // The server never decrypts. It just pushes the encrypted payload to
         // the receiver's open socket (if they are currently connected).
         const io = getIO();
@@ -40,6 +41,7 @@ router.post('/', protect, async (req, res) => {
 
                 // Push updated unread count for the receiver's sidebar badge
                 const unreadCount = await Message.countDocuments({
+                    conversationType: 'direct',
                     senderId: req.user._id,
                     receiverId,
                     isRead: false
@@ -65,6 +67,7 @@ router.post('/', protect, async (req, res) => {
 router.get('/:otherUserId', protect, async (req, res) => {
     try {
         const messages = await Message.find({
+            conversationType: 'direct',
             $or: [
                 { senderId: req.user._id, receiverId: req.params.otherUserId },
                 { senderId: req.params.otherUserId, receiverId: req.user._id }
@@ -88,8 +91,14 @@ router.get('/:otherUserId', protect, async (req, res) => {
 router.get('/conversations/list', protect, async (req, res) => {
     try {
          // Find all unique users interacted with
-         const sentTo = await Message.distinct('receiverId', { senderId: req.user._id });
-         const receivedFrom = await Message.distinct('senderId', { receiverId: req.user._id });
+         const sentTo = await Message.distinct('receiverId', {
+             conversationType: 'direct',
+             senderId: req.user._id
+         });
+         const receivedFrom = await Message.distinct('senderId', {
+             conversationType: 'direct',
+             receiverId: req.user._id
+         });
          
          const contactIds = [...new Set([...sentTo, ...receivedFrom].map(id => id.toString()))];
          
@@ -99,19 +108,34 @@ router.get('/conversations/list', protect, async (req, res) => {
              const user = await User.findById(contactId).select('username');
              if (user) {
                  const unreadCount = await Message.countDocuments({
+                     conversationType: 'direct',
                      senderId: contactId,
                      receiverId: req.user._id,
                      isRead: false
                  });
+                 const lastMessage = await Message.findOne({
+                     conversationType: 'direct',
+                     $or: [
+                         { senderId: req.user._id, receiverId: contactId },
+                         { senderId: contactId, receiverId: req.user._id }
+                     ]
+                 }).sort({ createdAt: -1 }).select('createdAt');
                  
                  conversations.push({
+                     conversationType: 'direct',
                      userId: user._id,
                      username: user.username,
-                     unreadCount
+                     unreadCount,
+                     lastMessageAt: lastMessage?.createdAt || null
                  });
              }
          }
-         
+         conversations.sort((a, b) => {
+             const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+             const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+             return bt - at;
+         });
+
          res.json(conversations);
     } catch (error) {
         console.error(error);
@@ -125,7 +149,7 @@ router.get('/conversations/list', protect, async (req, res) => {
 router.put('/read/:senderId', protect, async (req, res) => {
     try {
         await Message.updateMany(
-            { senderId: req.params.senderId, receiverId: req.user._id, isRead: false },
+            { conversationType: 'direct', senderId: req.params.senderId, receiverId: req.user._id, isRead: false },
             { $set: { isRead: true } }
         );
         res.json({ message: 'Messages marked as read' });
@@ -141,6 +165,7 @@ router.put('/read/:senderId', protect, async (req, res) => {
 router.get('/unread/count', protect, async (req, res) => {
     try {
         const count = await Message.countDocuments({
+            conversationType: 'direct',
             receiverId: req.user._id,
             isRead: false
         });
@@ -161,6 +186,9 @@ router.put('/:id/edit', protect, async (req, res) => {
 
         if (!message) {
             return res.status(404).json({ message: 'Message not found' });
+        }
+        if (message.conversationType !== 'direct') {
+            return res.status(400).json({ message: 'Use group message endpoints for group chat messages' });
         }
 
         // Only sender can edit
@@ -223,6 +251,9 @@ router.put('/:id/delete', protect, async (req, res) => {
         if (!message) {
             return res.status(404).json({ message: 'Message not found' });
         }
+        if (message.conversationType !== 'direct') {
+            return res.status(400).json({ message: 'Use group message endpoints for group chat messages' });
+        }
 
         // Check if user is participant
         if (message.senderId.toString() !== req.user._id.toString() && 
@@ -252,6 +283,9 @@ router.put('/:id/unsend', protect, async (req, res) => {
 
         if (!message) {
             return res.status(404).json({ message: 'Message not found' });
+        }
+        if (message.conversationType !== 'direct') {
+            return res.status(400).json({ message: 'Use group message endpoints for group chat messages' });
         }
 
         // Only sender can unsend

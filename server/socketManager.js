@@ -1,10 +1,13 @@
 import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import User from './models/User.js';
+import GroupMember from './models/GroupMember.js';
 
 // In-memory map: userId (string) -> socketId (string)
 // This is PRIVATE — never sent to clients.
 const userSocketMap = new Map();
+
+const roomForGroup = (groupId) => `group:${groupId.toString()}`;
 
 /**
  * Returns the socket ID for a given userId, or undefined if not connected.
@@ -65,6 +68,16 @@ export const initSocket = (httpServer) => {
         userSocketMap.set(userId, socket.id);
         console.log(`[Socket] User connected: ${socket.user.username} (${socket.id})`);
 
+        // Auto-join all active group rooms for this user
+        GroupMember.find({ userId, status: 'active' })
+            .select('groupId')
+            .then((memberships) => {
+                memberships.forEach((m) => socket.join(roomForGroup(m.groupId)));
+            })
+            .catch((err) => {
+                console.warn('[Socket] Failed to auto-join group rooms:', err.message);
+            });
+
         // ── Typing Indicator ─────────────────────────────────────────────────
         // Client emits: { recipientId: string }
         // Server relays to recipient only (does NOT broadcast)
@@ -85,6 +98,34 @@ export const initSocket = (httpServer) => {
             const recipientSocketId = userSocketMap.get(recipientId.toString());
             if (recipientSocketId) {
                 io.to(recipientSocketId).emit('stop_typing', { senderId: userId });
+            }
+        });
+
+        // Explicit group room join (membership validated server-side)
+        socket.on('group:join', async ({ groupId }, ack) => {
+            try {
+                if (!groupId) throw new Error('groupId is required');
+                const membership = await GroupMember.findOne({
+                    groupId,
+                    userId,
+                    status: 'active'
+                }).select('_id');
+                if (!membership) throw new Error('Not a group member');
+                socket.join(roomForGroup(groupId));
+                if (typeof ack === 'function') ack({ ok: true });
+            } catch (err) {
+                if (typeof ack === 'function') ack({ ok: false, message: err.message || 'Join failed' });
+            }
+        });
+
+        // Explicit group room leave
+        socket.on('group:leave', async ({ groupId }, ack) => {
+            try {
+                if (!groupId) throw new Error('groupId is required');
+                socket.leave(roomForGroup(groupId));
+                if (typeof ack === 'function') ack({ ok: true });
+            } catch (err) {
+                if (typeof ack === 'function') ack({ ok: false, message: err.message || 'Leave failed' });
             }
         });
 

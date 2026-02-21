@@ -3,7 +3,24 @@ import { motion } from 'framer-motion';
 import { Lock, Send, AlertTriangle, ShieldCheck, ExternalLink, ArrowLeft, Repeat, Search, Reply, MoreVertical, Trash2, X, Edit2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
-import { getConversations, getMessages, sendMessage, getUserPublicKey, markMessagesRead, getSinglePost, editMessage, deleteMessage, unsendMessage } from '../services/mockBackend';
+import {
+  getConversations,
+  getMessages,
+  sendMessage,
+  getUserPublicKey,
+  markMessagesRead,
+  getSinglePost,
+  editMessage,
+  deleteMessage,
+  unsendMessage,
+  getGroupMessages,
+  sendGroupMessage,
+  markGroupRead,
+  editGroupMessage,
+  deleteGroupMessage,
+  unsendGroupMessage,
+  createGroupConversation
+} from '../services/mockBackend';
 import { encryptMessage, decryptMessage } from '../services/cryptoService';
 import { Message, DecryptedMessage, ConversationSummary, Post } from '../types';
 
@@ -80,6 +97,10 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messageSearchQuery, setMessageSearchQuery] = useState('');
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [groupNameInput, setGroupNameInput] = useState('');
+  const [groupUsersInput, setGroupUsersInput] = useState('');
+  const [creatingGroup, setCreatingGroup] = useState(false);
 
   // Derived: filter conversations by search query.
   // Source of truth is always `conversations` — never filter an already-filtered list.
@@ -106,6 +127,8 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   messagesRef.current = messages;
   activeChatRef.current = activeChat;
   conversationsRef.current = conversations;
+  const isGroupConversation = (chat?: ConversationSummary | null) =>
+    Boolean(chat?.isGroup || chat?.conversationType === 'group');
 
   useEffect(() => {
     return () => {
@@ -117,6 +140,15 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   useEffect(() => {
     setContextMenuId(null);
   }, [activeChat?.userId]);
+
+  useEffect(() => {
+    if (!socket || !activeChat || !isGroupConversation(activeChat)) return;
+    const groupId = String(activeChat.groupId ?? activeChat.userId);
+    socket.emit('group:join', { groupId });
+    return () => {
+      socket.emit('group:leave', { groupId });
+    };
+  }, [socket, activeChat?.groupId, activeChat?.userId, activeChat?.conversationType, activeChat?.isGroup]);
 
   // Scroll to bottom
   useEffect(() => {
@@ -273,11 +305,98 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
     };
 
+    const handleGroupMessage = (rawMsg: any) => {
+      const normalizedId = String(rawMsg?._id ?? rawMsg?.id ?? `temp-${Date.now()}-${Math.random()}`);
+      const senderRaw = rawMsg?.senderId;
+      const senderId = typeof senderRaw === 'object' && senderRaw !== null
+        ? String(senderRaw._id ?? senderRaw.id ?? '')
+        : String(senderRaw ?? '');
+      const senderUsername = typeof senderRaw === 'object' && senderRaw !== null
+        ? senderRaw.username
+        : rawMsg?.senderUsername;
+      const groupId = String(rawMsg?.groupId ?? '');
+
+      const message: DecryptedMessage = {
+        ...(rawMsg as any),
+        id: normalizedId,
+        senderId,
+        groupId,
+        content: rawMsg?.isUnsent ? '' : (rawMsg?.content ?? ''),
+        isMine: senderId === String(user.id),
+        senderUsername
+      };
+
+      const active = activeChatRef.current;
+      const activeGroupId = String(active?.groupId ?? active?.userId ?? '');
+      if (active && isGroupConversation(active) && activeGroupId === groupId) {
+        setMessages(prev => {
+          if (prev.some(m => String(m.id) === normalizedId)) return prev;
+          return [...prev, message];
+        });
+      }
+
+      setConversations(prev =>
+        prev.map(c => {
+          const cid = String(c.groupId ?? c.userId);
+          if (!isGroupConversation(c) || cid !== groupId) return c;
+          const unreadPlus = activeGroupId !== groupId && senderId !== String(user.id) ? 1 : 0;
+          return {
+            ...c,
+            unreadCount: unreadPlus ? (c.unreadCount ?? 0) + 1 : c.unreadCount ?? 0,
+            lastMessageAt: (rawMsg?.createdAt || rawMsg?.timestamp || new Date().toISOString()) as any
+          };
+        })
+      );
+    };
+
+    const handleGroupSystem = (rawMsg: any) => {
+      handleGroupMessage({ ...rawMsg, messageType: 'system' });
+    };
+
+    const handleGroupMessageUpdate = (updatedMsg: any) => {
+      const messageId = String(updatedMsg.messageId || updatedMsg._id || '');
+      if (!messageId) return;
+      setMessages(prev => prev.map(m => {
+        if (String(m.id) !== messageId) return m;
+        return {
+          ...m,
+          content: updatedMsg.isUnsent ? '' : (updatedMsg.content ?? m.content),
+          isEdited: updatedMsg.isEdited ?? m.isEdited,
+          isUnsent: updatedMsg.isUnsent ?? m.isUnsent,
+          editedAt: updatedMsg.editedAt ?? m.editedAt
+        };
+      }));
+    };
+
+    const handleGroupCreated = ({ group }: any) => {
+      if (!group) return;
+      setConversations(prev => {
+        const gid = String(group.groupId ?? group.userId ?? group.id);
+        const exists = prev.some(c => String(c.groupId ?? c.userId) === gid);
+        if (exists) return prev;
+        return [{ ...group, isGroup: true, conversationType: 'group' }, ...prev];
+      });
+    };
+
+    const handleGroupRemoved = ({ groupId }: { groupId: string }) => {
+      setConversations(prev => prev.filter(c => String(c.groupId ?? c.userId) !== String(groupId)));
+      const active = activeChatRef.current;
+      if (active && String(active.groupId ?? active.userId) === String(groupId)) {
+        setActiveChat(null);
+        setMessages([]);
+      }
+    };
+
     socket.on('receive_message', handleReceiveMessage);
     socket.on('unread_count_update', handleUnreadUpdate);
     socket.on('typing', handleTyping);
     socket.on('stop_typing', handleStopTyping);
     socket.on('message_updated', handleMessageUpdated);
+    socket.on('group:message', handleGroupMessage);
+    socket.on('group:system', handleGroupSystem);
+    socket.on('group:message:update', handleGroupMessageUpdate);
+    socket.on('group:create', handleGroupCreated);
+    socket.on('group:removed', handleGroupRemoved);
 
     return () => {
       socket.off('receive_message', handleReceiveMessage);
@@ -285,6 +404,11 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
       socket.off('typing', handleTyping);
       socket.off('stop_typing', handleStopTyping);
       socket.off('message_updated', handleMessageUpdated);
+      socket.off('group:message', handleGroupMessage);
+      socket.off('group:system', handleGroupSystem);
+      socket.off('group:message:update', handleGroupMessageUpdate);
+      socket.off('group:create', handleGroupCreated);
+      socket.off('group:removed', handleGroupRemoved);
     };
   }, [socket, user, privateKey]);
 
@@ -305,6 +429,39 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     loadConvos();
   }, [user?.id]);
 
+  const handleCreateGroup = async () => {
+    const name = groupNameInput.trim();
+    if (!name) {
+      setError('Group name is required');
+      return;
+    }
+    const usernames = groupUsersInput
+      .split(',')
+      .map(u => u.trim())
+      .filter(Boolean);
+
+    try {
+      setCreatingGroup(true);
+      setError(null);
+      const created = await createGroupConversation(name, usernames);
+      const normalized: ConversationSummary = {
+        ...created,
+        isGroup: true,
+        conversationType: 'group',
+        groupId: String((created as any).groupId ?? created.userId)
+      };
+      setConversations(prev => [normalized, ...prev.filter(c => String(c.userId) !== String(normalized.userId))]);
+      setActiveChat(normalized);
+      setShowCreateGroup(false);
+      setGroupNameInput('');
+      setGroupUsersInput('');
+    } catch (e: any) {
+      setError(e.message || 'Failed to create group');
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
+
   // Handle Initial Chat Prop (From Profile Button) - ONE TIME SETUP
   // Fix: changed dependency array to only trigger when prop actually changes, and guarded against unnecessary resets
   useEffect(() => {
@@ -315,7 +472,9 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
 
     const initChat = async () => {
       const currentConvos = await loadConvos();
-      const existing = currentConvos?.find(c => c.username.toLowerCase() === initialChatUsername.toLowerCase());
+      const existing = currentConvos?.find(
+        c => !isGroupConversation(c) && c.username.toLowerCase() === initialChatUsername.toLowerCase()
+      );
       
       if (existing) {
         setActiveChat(existing);
@@ -338,6 +497,36 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     const loadMessages = async () => {
       setLoading(true);
       try {
+        if (isGroupConversation(activeChat)) {
+          const groupId = String(activeChat.groupId ?? activeChat.userId);
+          const groupMsgs = await getGroupMessages(groupId);
+          const normalized = groupMsgs.map((msg: any) => {
+            const senderRaw = msg.senderId;
+            const senderId = typeof senderRaw === 'object' && senderRaw !== null
+              ? String(senderRaw._id ?? senderRaw.id ?? '')
+              : String(senderRaw ?? '');
+            const senderUsername = typeof senderRaw === 'object' && senderRaw !== null
+              ? senderRaw.username
+              : msg.senderUsername;
+
+            return {
+              ...msg,
+              id: String((msg as any)._id ?? msg.id),
+              groupId,
+              senderId,
+              senderUsername,
+              content: msg.isUnsent ? '' : (msg.content ?? ''),
+              isMine: senderId === String(user.id)
+            } as DecryptedMessage;
+          });
+          setMessages(normalized);
+          if ((activeChat.unreadCount ?? 0) > 0) {
+            await markGroupRead(groupId);
+            loadConvos();
+          }
+          return;
+        }
+
         const encryptedMsgs = await getMessages(user.id, activeChat.userId);
         
           // Decrypt messages
@@ -422,35 +611,72 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     setSending(true);
     setError(null);
 
-    // Stop typing indicator on send
-    if (socket && activeChat) {
+    if (socket && activeChat && !isGroupConversation(activeChat)) {
       socket.emit('stop_typing', { recipientId: activeChat.userId });
     }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
     try {
-      // ─── EDIT MODE ───
       if (editingMessage) {
-         const recipientData = await getUserPublicKey(activeChat.username);
-         const encryptedPayload = await encryptMessage(newMessage, recipientData.publicKey, user.publicKey!);
-         
-         await editMessage(
-           editingMessage.id,
-           encryptedPayload.encryptedContent,
-           encryptedPayload.iv,
-           encryptedPayload.encryptedKeyForReceiver,
-           encryptedPayload.encryptedKeyForSender
-         );
-         
-         // Optimistic Update
-         setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content: newMessage, isEdited: true } : m));
-         setEditingMessage(null);
-         setNewMessage('');
-         setSending(false);
-         return;
+        if (isGroupConversation(activeChat)) {
+          await editGroupMessage(editingMessage.id, newMessage);
+          setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content: newMessage, isEdited: true } : m));
+          setEditingMessage(null);
+          setNewMessage('');
+          setSending(false);
+          return;
+        }
+
+        const recipientData = await getUserPublicKey(activeChat.username);
+        const encryptedPayload = await encryptMessage(newMessage, recipientData.publicKey, user.publicKey!);
+
+        await editMessage(
+          editingMessage.id,
+          encryptedPayload.encryptedContent,
+          encryptedPayload.iv,
+          encryptedPayload.encryptedKeyForReceiver,
+          encryptedPayload.encryptedKeyForSender
+        );
+
+        setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content: newMessage, isEdited: true } : m));
+        setEditingMessage(null);
+        setNewMessage('');
+        setSending(false);
+        return;
       }
 
-      // ─── SEND MODE ───
+      if (isGroupConversation(activeChat)) {
+        const groupId = String(activeChat.groupId ?? activeChat.userId);
+        const msg = await sendGroupMessage(groupId, newMessage, replyingTo?.id);
+        const senderRaw: any = (msg as any).senderId;
+        const senderId = typeof senderRaw === 'object' && senderRaw !== null
+          ? String(senderRaw._id ?? senderRaw.id ?? user.id)
+          : String(senderRaw ?? user.id);
+        const senderUsername = typeof senderRaw === 'object' && senderRaw !== null
+          ? senderRaw.username
+          : user.username;
+
+        const groupedMsg: DecryptedMessage = {
+          ...(msg as any),
+          id: String((msg as any)._id ?? msg.id),
+          senderId,
+          senderUsername,
+          groupId,
+          content: (msg as any).isUnsent ? '' : ((msg as any).content ?? newMessage),
+          isMine: senderId === String(user.id),
+          replyTo: replyingTo ? (replyingTo as any) : undefined,
+          isUnsent: Boolean((msg as any).isUnsent)
+        };
+
+        setMessages(prev => {
+          if (prev.some(m => m.id === groupedMsg.id)) return prev;
+          return [...prev, groupedMsg];
+        });
+        setNewMessage('');
+        setReplyingTo(null);
+        return;
+      }
+
       const recipientData = await getUserPublicKey(activeChat.username);
       if (!user.publicKey) throw new Error('You do not have a public key. Please re-register.');
 
@@ -467,33 +693,31 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         encryptedPayload.iv,
         encryptedPayload.encryptedKeyForReceiver,
         encryptedPayload.encryptedKeyForSender,
-        replyingTo?.id // Include reply ID
+        replyingTo?.id
       );
 
-      // Optimistic UI: use canonical id to prevent duplicate with socket echo
       const decryptedMsg: DecryptedMessage = {
         ...msg,
         id: msg.id || (msg as any)._id,
         content: newMessage,
         isMine: true,
-        replyTo: replyingTo ? (replyingTo as any) : undefined, // Optimistic reply reference
+        replyTo: replyingTo ? (replyingTo as any) : undefined,
         isUnsent: false
       };
-      
+
       setMessages(prev => {
         if (prev.some(m => m.id === decryptedMsg.id)) return prev;
         return [...prev, decryptedMsg];
       });
       setNewMessage('');
-      setReplyingTo(null); // Clear reply
+      setReplyingTo(null);
     } catch (err: any) {
       setError(err.message || 'Failed to send message');
     } finally {
       setSending(false);
     }
   };
-
-  const handleReply = (msg: DecryptedMessage) => {
+const handleReply = (msg: DecryptedMessage) => {
     setReplyingTo(msg);
     setEditingMessage(null);
     setContextMenuId(null);
@@ -510,7 +734,11 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const handleDelete = async (msg: DecryptedMessage) => {
     if (!window.confirm("Delete this message just for you?")) return;
     try {
-        await deleteMessage(msg.id);
+        if (activeChat && isGroupConversation(activeChat)) {
+          await deleteGroupMessage(msg.id);
+        } else {
+          await deleteMessage(msg.id);
+        }
         // Remove locally
         setMessages(prev => prev.filter(m => m.id !== msg.id));
     } catch (e: any) {
@@ -523,7 +751,11 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const handleUnsend = async (msg: DecryptedMessage) => {
     if (!window.confirm("Unsend for everyone?")) return;
     try {
-        await unsendMessage(msg.id);
+        if (activeChat && isGroupConversation(activeChat)) {
+          await unsendGroupMessage(msg.id);
+        } else {
+          await unsendMessage(msg.id);
+        }
         // Update locally
         setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isUnsent: true, content: '' } : m));
     } catch (e: any) {
@@ -537,7 +769,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
 
-    if (!socket || !activeChat) return;
+    if (!socket || !activeChat || isGroupConversation(activeChat)) return;
 
     // Emit typing
     if (!typingTimeoutRef.current) {
@@ -599,6 +831,13 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         <div className="px-4 pt-5 pb-3 shrink-0">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-white">Messages</h2>
+            <button
+              type="button"
+              onClick={() => setShowCreateGroup(prev => !prev)}
+              className="px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/15 text-[11px] text-gray-200 transition-colors"
+            >
+              New Group
+            </button>
           </div>
 
           {/* Search bar */}
@@ -615,6 +854,42 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
               className="w-full bg-white/6 rounded-full py-2 pl-9 pr-4 text-sm text-gray-300 placeholder-gray-500 border border-transparent focus:border-white/15 focus:bg-white/10 outline-none transition-all"
             />
           </div>
+
+          {showCreateGroup && (
+            <div className="mt-3 space-y-2 rounded-xl border border-white/10 bg-white/5 p-3">
+              <input
+                type="text"
+                value={groupNameInput}
+                onChange={(e) => setGroupNameInput(e.target.value)}
+                placeholder="Group name"
+                className="w-full bg-[#1a1a1a] rounded-lg px-3 py-2 text-xs text-gray-100 placeholder-gray-500 border border-white/10 outline-none focus:border-white/20"
+              />
+              <input
+                type="text"
+                value={groupUsersInput}
+                onChange={(e) => setGroupUsersInput(e.target.value)}
+                placeholder="Members by username (comma separated)"
+                className="w-full bg-[#1a1a1a] rounded-lg px-3 py-2 text-xs text-gray-100 placeholder-gray-500 border border-white/10 outline-none focus:border-white/20"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateGroup(false)}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 text-xs text-gray-300 hover:bg-white/15 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateGroup}
+                  disabled={creatingGroup}
+                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-purple-600 text-xs text-white disabled:opacity-60"
+                >
+                  {creatingGroup ? 'Creating...' : 'Create'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Conversations List */}
@@ -651,7 +926,9 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                   {getInitials(chat.username)}
                 </div>
                 {/* Online indicator */}
-                <div className="absolute bottom-0.5 right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-[#111111]" />
+                {!isGroupConversation(chat) && (
+                  <div className="absolute bottom-0.5 right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-[#111111]" />
+                )}
                 {chat.unreadCount > 0 && (
                   <div className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] bg-red-500 rounded-full flex items-center justify-center px-1 border-2 border-[#111111]">
                     <span className="text-[10px] text-white font-bold">{chat.unreadCount}</span>
@@ -665,16 +942,22 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                   <span className={`text-sm font-semibold truncate ${activeChat?.userId === chat.userId ? 'text-white' : 'text-gray-200'}`}>
                     {chat.username}
                   </span>
-                  <button
-                    onClick={e => { e.stopPropagation(); onViewProfile(chat.username); }}
-                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 p-1 rounded-full hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-all"
-                    title="View Profile"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                  </button>
+                  {!isGroupConversation(chat) && (
+                    <button
+                      onClick={e => { e.stopPropagation(); onViewProfile(chat.username); }}
+                      className="opacity-100 md:opacity-0 md:group-hover:opacity-100 p-1 rounded-full hover:bg-white/10 text-gray-500 hover:text-gray-300 transition-all"
+                      title="View Profile"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
                 <p className={`text-xs truncate mt-0.5 ${chat.unreadCount > 0 ? 'text-white font-medium' : 'text-gray-500'}`}>
-                  {chat.unreadCount > 0 ? `${chat.unreadCount} new message${chat.unreadCount > 1 ? 's' : ''}` : 'Tap to open chat'}
+                  {chat.unreadCount > 0
+                    ? `${chat.unreadCount} new message${chat.unreadCount > 1 ? 's' : ''}`
+                    : (isGroupConversation(chat)
+                      ? `${chat.memberCount ?? 0} members`
+                      : 'Tap to open chat')}
                 </p>
               </div>
             </div>
@@ -718,18 +1001,26 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shadow">
                   {getInitials(activeChat.username)}
                 </div>
-                <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-400 rounded-full border-2 border-[#0d0d0d]" />
+                {!isGroupConversation(activeChat) && (
+                  <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-400 rounded-full border-2 border-[#0d0d0d]" />
+                )}
               </div>
 
               {/* Name + status */}
               <div className="flex-1 min-w-0">
-                <button
-                  onClick={() => onViewProfile(activeChat.username)}
-                  className="block text-sm font-semibold text-white hover:text-purple-300 transition-colors truncate text-left"
-                >
-                  {activeChat.username}
-                </button>
-                {isOtherTyping ? (
+                {isGroupConversation(activeChat) ? (
+                  <span className="block text-sm font-semibold text-white truncate text-left">
+                    {activeChat.username}
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => onViewProfile(activeChat.username)}
+                    className="block text-sm font-semibold text-white hover:text-purple-300 transition-colors truncate text-left"
+                  >
+                    {activeChat.username}
+                  </button>
+                )}
+                {!isGroupConversation(activeChat) && isOtherTyping ? (
                   <span className="flex items-center gap-1 text-[11px] text-green-400">
                     <span className="inline-flex gap-0.5 items-end">
                       <span className="w-1 h-1 bg-green-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -739,17 +1030,23 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                     typing...
                   </span>
                 ) : (
-                  <span className="text-[11px] text-green-400">Active now</span>
+                  <span className="text-[11px] text-green-400">
+                    {isGroupConversation(activeChat)
+                      ? `${activeChat.memberCount ?? 0} members${activeChat.isAdmin ? ' • Admin' : ''}`
+                      : 'Active now'}
+                  </span>
                 )}
               </div>
 
-              <button
-                onClick={() => onViewProfile(activeChat.username)}
-                className="p-2 rounded-full hover:bg-white/8 text-gray-400 hover:text-gray-200 transition-colors"
-                title="View profile"
-              >
-                <ExternalLink className="w-4 h-4" />
-              </button>
+              {!isGroupConversation(activeChat) && (
+                <button
+                  onClick={() => onViewProfile(activeChat.username)}
+                  className="p-2 rounded-full hover:bg-white/8 text-gray-400 hover:text-gray-200 transition-colors"
+                  title="View profile"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </button>
+              )}
             </div>
 
             {/* Messages Area */}
@@ -767,7 +1064,11 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                     {getInitials(activeChat.username)}
                   </div>
                   <p className="font-semibold text-white">{activeChat.username}</p>
-                  <p className="text-xs text-gray-500 mt-1">Say hi! Your message is end-to-end encrypted.</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {isGroupConversation(activeChat)
+                      ? 'Start the group conversation.'
+                      : 'Say hi! Your message is end-to-end encrypted.'}
+                  </p>
                 </div>
               ) : (
                 <>
@@ -776,6 +1077,23 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                     const isFirst = !prevMsg || prevMsg.isMine !== msg.isMine;
                     const nextMsg = messages[i + 1];
                     const isLast = !nextMsg || nextMsg.isMine !== msg.isMine;
+                    const isSystemMessage = msg.messageType === 'system';
+
+                    if (isSystemMessage) {
+                      return (
+                        <motion.div
+                          key={msg.id}
+                          initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={{ duration: 0.15 }}
+                          className="flex justify-center my-2 px-2"
+                        >
+                          <div className="max-w-[90%] text-center text-[11px] text-gray-400 bg-white/5 border border-white/10 rounded-full px-3 py-1.5">
+                            {msg.content}
+                          </div>
+                        </motion.div>
+                      );
+                    }
 
                     return (
                       <motion.div
@@ -789,7 +1107,7 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                         <div className="w-7 h-7 shrink-0">
                           {!msg.isMine && isLast && (
                             <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-[10px] font-bold">
-                              {getInitials(activeChat.username)}
+                              {getInitials((msg.senderUsername as string) || activeChat.username)}
                             </div>
                           )}
                         </div>
@@ -799,19 +1117,21 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                           
                           {/* Message Actions Menu (Long press / click support) */}
                           {/* Trigger */}
-                          <button 
-                            onClick={(e) => { 
-                                e.stopPropagation(); 
-                                setContextMenuId(prev => prev === msg.id ? null : msg.id); 
-                            }}
-                            className={`absolute top-1 p-1 rounded-full bg-black/45 border border-white/10 text-gray-400 hover:text-white opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all ${msg.isMine ? '-left-7' : '-right-7'}`}
-                          >
-                             <MoreVertical className="w-4 h-4" />
-                          </button>
+                          {!isSystemMessage && (
+                            <button 
+                              onClick={(e) => { 
+                                  e.stopPropagation(); 
+                                  setContextMenuId(prev => prev === msg.id ? null : msg.id); 
+                              }}
+                              className={`absolute top-1 p-1 rounded-full bg-black/45 border border-white/10 text-gray-400 hover:text-white opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all ${msg.isMine ? '-left-7' : '-right-7'}`}
+                            >
+                               <MoreVertical className="w-4 h-4" />
+                            </button>
+                          )}
 
                           {/* Menu Popup */}
                           {/* Menu Popup: Only render if contextMenuId matches AND msg.id is valid */}
-                          {contextMenuId === msg.id && msg.id && (
+                          {!isSystemMessage && contextMenuId === msg.id && msg.id && (
                              <div 
                                 onClick={(e) => e.stopPropagation()}
                                 className={`absolute z-50 bg-[#222] border border-white/10 rounded-lg shadow-xl py-1 w-36 max-w-[calc(100vw-3rem)] ${msg.isMine ? '-left-2' : '-right-2'} top-8`}
@@ -845,6 +1165,11 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
                               : `${isFirst ? 'rounded-t-2xl rounded-br-2xl' : ''} ${isLast ? 'rounded-b-2xl rounded-br-2xl' : ''} ${!isFirst && !isLast ? 'rounded-r-2xl rounded-l-md' : ''} rounded-bl-md`
                             }`}
                           >
+                            {isGroupConversation(activeChat) && !msg.isMine && (msg.senderUsername || (msg as any).senderId?.username) && (
+                              <p className="text-[10px] font-semibold text-purple-200/90 mb-1">
+                                {msg.senderUsername || (msg as any).senderId?.username}
+                              </p>
+                            )}
                             {/* Reply Quote */}
                             {msg.replyTo && (
                                 <div className={`mb-2 pl-2 border-l-2 ${msg.isMine ? 'border-white/30' : 'border-purple-500'} text-xs opacity-80`}>
@@ -987,4 +1312,5 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     </div>
   );
 };
+
 

@@ -278,7 +278,22 @@ export const getMessages = async (userId: string, otherUserId: string): Promise<
 };
 
 export const getConversations = async (userId: string): Promise<ConversationSummary[]> => {
-    return fetchAPI('/messages/conversations/list');
+    const [directConversations, groupConversations] = await Promise.all([
+        normalize(await fetchAPI('/messages/conversations/list')),
+        (async () => {
+            try {
+                return normalize(await fetchAPI('/groups/conversations'));
+            } catch {
+                return [];
+            }
+        })()
+    ]);
+
+    return [...directConversations, ...groupConversations].sort((a: any, b: any) => {
+        const at = a?.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const bt = b?.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return bt - at;
+    });
 };
 
 export const markMessagesRead = async (userId: string, senderId: string): Promise<void> => {
@@ -290,6 +305,112 @@ export const markMessagesRead = async (userId: string, senderId: string): Promis
 export const getTotalUnreadCount = async (userId: string): Promise<number> => {
     const data = await fetchAPI('/messages/unread/count');
     return data.count;
+};
+
+// --- GROUP CHAT SERVICES ---
+
+export const createGroupConversation = async (
+    name: string,
+    memberUsernames: string[] = [],
+    avatarUrl?: string
+): Promise<ConversationSummary> => {
+    return normalize(await fetchAPI('/groups', {
+        method: 'POST',
+        body: JSON.stringify({ name, memberUsernames, avatarUrl })
+    }));
+};
+
+export const getGroupConversations = async (): Promise<ConversationSummary[]> => {
+    return normalize(await fetchAPI('/groups/conversations'));
+};
+
+export const getGroupDetails = async (groupId: string): Promise<any> => {
+    return normalize(await fetchAPI(`/groups/${groupId}`));
+};
+
+export const renameGroup = async (groupId: string, name: string): Promise<ConversationSummary> => {
+    return normalize(await fetchAPI(`/groups/${groupId}/rename`, {
+        method: 'PUT',
+        body: JSON.stringify({ name })
+    }));
+};
+
+export const leaveGroup = async (groupId: string): Promise<{ message: string }> => {
+    return fetchAPI(`/groups/${groupId}/leave`, {
+        method: 'PUT'
+    });
+};
+
+export const addGroupMembers = async (
+    groupId: string,
+    usernames: string[] = [],
+    userIds: string[] = []
+): Promise<{ addedUserIds: string[] }> => {
+    return fetchAPI(`/groups/${groupId}/members/add`, {
+        method: 'PUT',
+        body: JSON.stringify({ usernames, userIds })
+    });
+};
+
+export const removeGroupMember = async (groupId: string, userId: string): Promise<{ message: string }> => {
+    return fetchAPI(`/groups/${groupId}/members/remove`, {
+        method: 'PUT',
+        body: JSON.stringify({ userId })
+    });
+};
+
+export const promoteGroupAdmin = async (groupId: string, userId: string): Promise<{ message: string }> => {
+    return fetchAPI(`/groups/${groupId}/admins/promote`, {
+        method: 'PUT',
+        body: JSON.stringify({ userId })
+    });
+};
+
+export const demoteGroupAdmin = async (groupId: string, userId: string): Promise<{ message: string }> => {
+    return fetchAPI(`/groups/${groupId}/admins/demote`, {
+        method: 'PUT',
+        body: JSON.stringify({ userId })
+    });
+};
+
+export const sendGroupMessage = async (
+    groupId: string,
+    content: string,
+    replyTo?: string
+): Promise<Message> => {
+    return normalize(await fetchAPI(`/groups/${groupId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content, replyTo })
+    }));
+};
+
+export const getGroupMessages = async (groupId: string): Promise<Message[]> => {
+    return normalize(await fetchAPI(`/groups/${groupId}/messages`));
+};
+
+export const markGroupRead = async (groupId: string): Promise<void> => {
+    await fetchAPI(`/groups/${groupId}/read`, {
+        method: 'PUT'
+    });
+};
+
+export const editGroupMessage = async (messageId: string, content: string): Promise<Message> => {
+    return normalize(await fetchAPI(`/groups/messages/${messageId}/edit`, {
+        method: 'PUT',
+        body: JSON.stringify({ content })
+    }));
+};
+
+export const deleteGroupMessage = async (messageId: string): Promise<{ message: string }> => {
+    return fetchAPI(`/groups/messages/${messageId}/delete`, {
+        method: 'PUT'
+    });
+};
+
+export const unsendGroupMessage = async (messageId: string): Promise<{ message: string }> => {
+    return fetchAPI(`/groups/messages/${messageId}/unsend`, {
+        method: 'PUT'
+    });
 };
 
 // Legacy
