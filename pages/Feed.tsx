@@ -228,7 +228,7 @@ export const Feed: React.FC<FeedProps> = ({ onUserClick, onHashtagClick }) => {
   };
 
   const formatTime = (timeMs: number) => {
-    return new Date(timeMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return new Date(timeMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
   return (
@@ -239,18 +239,18 @@ export const Feed: React.FC<FeedProps> = ({ onUserClick, onHashtagClick }) => {
             <h1 className="text-2xl md:text-3xl font-bold text-white font-mono tracking-tight">PUBLIC_FEED</h1>
             <p className="text-gray-500 text-xs mt-2 font-mono flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full animate-pulse ${socket ? 'bg-neon-green' : 'bg-yellow-500'}`}></span>
-              {socket ? 'LIVE_STREAM_ON' : 'SYNC_MODE'} · UPDATED_{formatTime(lastSyncedAt)}
+              {socket ? 'LIVE_STREAM_ON' : 'SYNC_MODE'} | UPDATED_{formatTime(lastSyncedAt)}
             </p>
           </div>
 
           <div className="flex items-center gap-2">
             <Button
               variant="secondary"
-              onClick={() => loadFeed({ silent: true })}
-              disabled={isRefreshing}
+              onClick={() => loadFeed()}
+              disabled={loading || isRefreshing}
               className="!py-2 !px-3 md:!px-4 !text-xs"
             >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} /> REFRESH
+              <RefreshCw className={`w-4 h-4 ${(loading || isRefreshing) ? 'animate-spin' : ''}`} /> REFRESH
             </Button>
 
             {!isCreating && (
@@ -286,7 +286,7 @@ export const Feed: React.FC<FeedProps> = ({ onUserClick, onHashtagClick }) => {
               onClick={() => loadFeed({ silent: true })}
               className="text-xs font-mono text-neon-green border border-neon-green/40 bg-neon-green/10 px-3 py-1.5 rounded-sm hover:bg-neon-green/20 transition-colors"
             >
-              {livePostCount} NEW POSTS · LOAD
+              {livePostCount} NEW POSTS | LOAD
             </button>
           )}
         </div>
@@ -339,6 +339,7 @@ export const Feed: React.FC<FeedProps> = ({ onUserClick, onHashtagClick }) => {
     </div>
   );
 };
+
 
 
 
