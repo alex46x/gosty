@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Lock, Send, AlertTriangle, ShieldCheck, ExternalLink, ArrowLeft, Repeat, Edit3, Search, Reply, MoreVertical, Trash2, X, Edit2 } from 'lucide-react';
+import { Lock, Send, AlertTriangle, ShieldCheck, ExternalLink, ArrowLeft, Repeat, Search, Reply, MoreVertical, Trash2, X, Edit2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 import { getConversations, getMessages, sendMessage, getUserPublicKey, markMessagesRead, getSinglePost, editMessage, deleteMessage, unsendMessage } from '../services/mockBackend';
@@ -79,8 +79,6 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [newChatUsername, setNewChatUsername] = useState('');
-  const [showNewChatInput, setShowNewChatInput] = useState(false);
   const [messageSearchQuery, setMessageSearchQuery] = useState('');
 
   // Derived: filter conversations by search query.
@@ -553,37 +551,6 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
     }, 1500);
   };
 
-  const [startingChat, setStartingChat] = useState(false);
-
-  const startNewChat = async () => {
-    const trimmed = newChatUsername.trim();
-    if (!trimmed) return;
-    
-    console.log('[Messages] startNewChat called with username:', trimmed);
-    setStartingChat(true);
-    setError(null);
-    
-    try {
-      console.log('[Messages] Calling getUserPublicKey for:', trimmed);
-      const recipient = await getUserPublicKey(trimmed);
-      console.log('[Messages] Got recipient:', recipient);
-      
-      const newContact: ConversationSummary = { userId: recipient.id, username: trimmed, unreadCount: 0 };
-      
-      if (!conversations.find(c => c.userId === recipient.id)) {
-        setConversations(prev => [...prev, newContact]);
-      }
-      setActiveChat(newContact);
-      setShowNewChatInput(false);
-      setNewChatUsername('');
-    } catch (err: any) {
-      console.error('[Messages] startNewChat failed:', err);
-      setError(err.message || "User not found or secure messaging disabled.");
-    } finally {
-      setStartingChat(false);
-    }
-  };
-
   if (!privateKey) {
     return (
       <div className="flex flex-col items-center justify-center text-center py-20 px-6">
@@ -632,13 +599,6 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
         <div className="px-4 pt-5 pb-3 shrink-0">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-white">Messages</h2>
-            <button
-              onClick={() => setShowNewChatInput(!showNewChatInput)}
-              className="w-9 h-9 rounded-full bg-white/8 hover:bg-white/12 flex items-center justify-center text-white transition-colors"
-              title="New Message"
-            >
-              <Edit3 className="w-4 h-4" />
-            </button>
           </div>
 
           {/* Search bar */}
@@ -657,41 +617,9 @@ export const Messages: React.FC<MessagesProps> = ({ initialChatUsername, onViewP
           </div>
         </div>
 
-        {/* New Chat Input — always visible when showNewChatInput */}
-        {showNewChatInput && (
-          <div className="px-4 pb-3 shrink-0">
-            <div className="flex gap-2">
-              <input
-                id="new-chat-username"
-                name="new-chat-username"
-                type="text"
-                autoComplete="off"
-                className="flex-1 bg-white/6 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-white/25 outline-none transition-all"
-                placeholder="Enter username..."
-                value={newChatUsername}
-                onChange={e => {
-                  setNewChatUsername(e.target.value);
-                  setError(null);
-                }}
-                onKeyDown={e => e.key === 'Enter' && !startingChat && startNewChat()}
-                autoFocus
-                disabled={startingChat}
-              />
-              <button
-                onClick={startNewChat}
-                disabled={startingChat || !newChatUsername.trim()}
-                className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white text-xs font-semibold rounded-full hover:opacity-90 transition-opacity whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {startingChat ? '...' : 'Start'}
-              </button>
-            </div>
-            {error && <p className="text-xs text-red-400 mt-2 px-2">Error: {error}</p>}
-          </div>
-        )}
-
         {/* Conversations List */}
         <div className="flex-1 overflow-y-auto">
-          {conversations.length === 0 && !showNewChatInput && (
+          {conversations.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
               <div className="w-14 h-14 rounded-full bg-white/5 flex items-center justify-center mb-3">
                 <ShieldCheck className="w-7 h-7 text-gray-600" />
